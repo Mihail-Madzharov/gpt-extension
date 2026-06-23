@@ -184,9 +184,19 @@ app.post("/ai-task", async (req, res) => {
   });
 
   try {
-    const pageHtml = typeof pageContext?.html === "string" ? pageContext.html : "";
     const pageUrl = url || pageContext?.url || "";
     const pageTitle = title || pageContext?.title || "";
+
+    const formatElementsList = (elements) => {
+      if (!Array.isArray(elements) || elements.length === 0) {
+        return "(no elements found)";
+      }
+      return elements
+        .map((el) => `- <${el.tag}> "${el.text || "(no label)"}" (selector: ${el.selector})`)
+        .slice(0, 50)
+        .join("\n");
+    };
+    const elementsText = formatElementsList(pageContext?.elements);
 
     const taskText = String(task || "").trim();
     const normalizedTaskText = taskText.toLowerCase();
@@ -263,17 +273,16 @@ Return ONLY valid JSON in this exact schema:
 }
 
 Rules:
-- Use the provided HTML as the only source of truth.
+- Use the available page elements as the primary source.
 - If multiple candidates exist, return the most specific and relevant one.
-- Keep full attributes in html.
-- If not found, set found=false and html="".
+- If HTML is not available, set found=false and html="" and explain in reason.
 - No markdown and no extra text outside JSON.
 
 Current URL: ${pageUrl}
 Current Title: ${pageTitle}
 
-Current page HTML (truncated):
-${pageHtml.slice(0, 40000)}
+Page elements available:
+${elementsText}
 `,
           },
         ],
@@ -384,7 +393,7 @@ The user asked: "${taskText}"
 
 Respond in ${explanationLanguage}.
 
-Write a concise explanation of the CURRENT page, based on the provided URL, title, visible text, and HTML.
+Write a concise explanation of the CURRENT page, based on the provided URL, title, and available elements.
 
 Requirements:
 - Keep it factual and grounded in the provided page data.
@@ -396,11 +405,8 @@ Requirements:
 Current URL: ${pageUrl}
 Current Title: ${pageTitle}
 
-Visible page text (truncated):
-${String(pageContext?.text || "").slice(0, 20000)}
-
-Current page HTML (truncated):
-${pageHtml.slice(0, 30000)}
+Page elements available:
+${elementsText}
 `,
           },
         ],
@@ -423,12 +429,9 @@ ${pageHtml.slice(0, 30000)}
 
     const extractedSelectors = Array.isArray(pageContext?.elements)
       ? pageContext.elements
-          .map((item) => String(item?.cssSelector || "").trim())
+          .map((item) => String(item?.selector || "").trim())
           .filter(Boolean)
       : [];
-    const extractedSelectorsText = extractedSelectors.length
-      ? extractedSelectors.map((selector) => `- ${selector}`).join("\n")
-      : "- (none provided)";
     const extractedSelectorSet = new Set(extractedSelectors);
 
     const buildNavigationPrompt = ({ strictSelectorMode = false } = {}) => `
@@ -454,7 +457,7 @@ Rules:
 - If current page is wrong for task, first step must include navigateUrl.
 - Use ONLY cssSelector to identify targets. Do not return any target text field.
 - For each non-navigation step, cssSelector must be non-empty and valid.
-- Use only selectors from "Extracted selectors from page context" below.
+- Use only selectors from "Available page elements" below.
 - cssSelector must be a full selector path from a stable ancestor to the target using id/class selectors.
 - Prefer #id and .class segments, combined with descendant (space) or child (>) combinators.
 - Do not use :nth-child, :nth-of-type, or text-based selector patterns.
@@ -470,14 +473,8 @@ Current Title: ${pageTitle}
 Task:
 ${task}
 
-Extracted selectors from page context:
-${extractedSelectorsText}
-
-Current page HTML (full):
-${pageHtml}
-
-Page context:
-${JSON.stringify(pageContext).slice(0, 20000)}
+Available page elements:
+${elementsText}
 `;
 
     const parseJourneyFromText = (text) => {

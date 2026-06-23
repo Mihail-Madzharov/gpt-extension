@@ -212,24 +212,33 @@ function getPageContextFromDom() {
   const elements = [
     ...document.querySelectorAll("button, a, input, textarea, select"),
   ]
-    .map((el, index) => {
+    .map((el) => {
       const cssSelector = buildSelectorPath(el);
       if (!cssSelector) return null;
 
-      return {
-        index,
-        tag: el.tagName,
-        text:
-          el.innerText ||
-          el.value ||
+      let displayText = "";
+      if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") {
+        const label = document.querySelector(`label[for='${el.id}']`);
+        displayText =
+          label?.textContent ||
           el.placeholder ||
           el.getAttribute("aria-label") ||
-          "",
-        id: el.id || "",
-        name: el.getAttribute("name") || "",
-        type: el.getAttribute("type") || "",
-        href: el.href || "",
-        cssSelector,
+          el.getAttribute("title") ||
+          el.getAttribute("name") ||
+          "";
+      } else {
+        displayText =
+          el.innerText ||
+          el.textContent ||
+          el.getAttribute("aria-label") ||
+          el.getAttribute("title") ||
+          "";
+      }
+
+      return {
+        tag: el.tagName.toLowerCase(),
+        text: displayText.slice(0, 100).trim(),
+        selector: cssSelector,
       };
     })
     .filter(Boolean)
@@ -238,8 +247,6 @@ function getPageContextFromDom() {
   return {
     url: location.href,
     title: document.title,
-    html: document.documentElement.outerHTML,
-    text: document.body.innerText.slice(0, 15000),
     elements,
   };
 }
