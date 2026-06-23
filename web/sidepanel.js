@@ -15,6 +15,7 @@ const firebaseAuthStatusEl = document.getElementById("firebase-auth-status");
 // Google Authentication
 const googleLoginBtn = document.getElementById("google-login");
 const googleLogoutBtn = document.getElementById("google-logout");
+const openaiLoginBtn = document.getElementById("openai-login");
 
 let currentUser = null;
 let idToken = null;
@@ -143,6 +144,59 @@ async function backendRequest(path, options = {}) {
   return response.json();
 }
 
+async function loginWithOpenAI() {
+  openaiLoginBtn.disabled = true;
+  openaiLoginBtn.textContent = "Opening OpenAI login...";
+
+  try {
+    const redirectUri = chrome.identity.getRedirectURL("openai");
+    const authUrl = `${BACKEND_URL}/oauth/authorize?redirect_uri=${encodeURIComponent(redirectUri)}`;
+
+    const finalRedirectUrl = await chrome.identity.launchWebAuthFlow({
+      url: authUrl,
+      interactive: true,
+    });
+
+    const callbackUrl = new URL(finalRedirectUrl);
+    const code = callbackUrl.searchParams.get("code");
+    const oauthError = callbackUrl.searchParams.get("error");
+
+    if (oauthError) {
+      throw new Error(`OpenAI OAuth error: ${oauthError}`);
+    }
+
+    if (!code) {
+      throw new Error("No OAuth code received from OpenAI.");
+    }
+
+    const data = await backendRequest("/oauth/callback", {
+      method: "POST",
+      body: JSON.stringify({ code, redirectUri }),
+    });
+
+    if (!data.apiKey) {
+      throw new Error("Backend did not return an API key.");
+    }
+
+    await chrome.storage.sync.set({
+      openaiApiKey: data.apiKey,
+      authMethod: "oauth",
+    });
+
+    apiKeyInput.value = data.apiKey;
+    showKeyStatus("✅ OpenAI login successful. Credential saved.", "success");
+    updateAuthStatus();
+  } catch (error) {
+    showKeyStatus(`OpenAI login failed: ${error.message}`, "error");
+    console.error("OpenAI OAuth error:", error);
+  } finally {
+    openaiLoginBtn.disabled = false;
+    openaiLoginBtn.textContent = "Log in with OpenAI";
+  }
+}
+
+openaiLoginBtn.addEventListener("click", loginWithOpenAI);
+
 async function loadOpenAIKeyFromBackend() {
   if (!idToken) return;
 
@@ -255,7 +309,11 @@ async function updateAuthStatus() {
   try {
     const data = await chrome.storage.sync.get(["openaiApiKey", "authMethod"]);
     if (data.openaiApiKey) {
-      const method = data.authMethod === "firebase" ? "Firebase" : "Manual API Key";
+      const method = data.authMethod === "firebase"
+        ? "Firebase"
+        : data.authMethod === "oauth"
+          ? "OpenAI OAuth"
+          : "Manual API Key";
       authStatusEl.textContent = `✅ Authenticated via ${method}`;
       authStatusEl.className = "auth-status authenticated";
     } else {

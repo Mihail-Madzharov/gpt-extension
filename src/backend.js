@@ -77,7 +77,8 @@ const GOOGLE_OAUTH_CLIENT_ID =
 // OAuth Authorization Endpoint
 app.get("/oauth/authorize", (req, res) => {
   try {
-    const redirectUri = encodeURIComponent(OAUTH_CONFIG.redirectUri);
+    const requestedRedirectUri = req.query.redirect_uri;
+    const redirectUri = encodeURIComponent(requestedRedirectUri || OAUTH_CONFIG.redirectUri);
     const clientId = OAUTH_CONFIG.clientId;
     
     if (!clientId) {
@@ -123,7 +124,7 @@ app.post("/oauth/callback", async (req, res) => {
         client_id: OAUTH_CONFIG.clientId,
         client_secret: OAUTH_CONFIG.clientSecret,
         code,
-        redirect_uri: OAUTH_CONFIG.redirectUri,
+        redirect_uri: redirectUri || OAUTH_CONFIG.redirectUri,
         grant_type: "authorization_code",
       }),
     });
