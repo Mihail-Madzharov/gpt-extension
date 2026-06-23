@@ -173,11 +173,56 @@
         border: 1px solid var(--vscode-panel-border, #3e3e42);
         border-radius: 4px;
         overflow-y: auto;
-        font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
         font-size: 12px;
         line-height: 1.5;
         flex: 1;
         word-wrap: break-word;
+      }
+
+      .journey-toolbar {
+        display: flex;
+        gap: 8px;
+        margin-bottom: 10px;
+      }
+
+      .journey-summary {
+        margin-bottom: 8px;
+      }
+
+      .journey-progress {
+        margin-bottom: 10px;
+        color: var(--vscode-descriptionForeground, #cccccc);
+      }
+
+      .journey-step {
+        border: 1px solid var(--vscode-panel-border, #3e3e42);
+        border-radius: 6px;
+        padding: 10px;
+        background: var(--vscode-input-background, #252526);
+      }
+
+      .journey-step-title {
+        font-size: 13px;
+        font-weight: 600;
+        margin-bottom: 6px;
+      }
+
+      .journey-step-action {
+        margin-bottom: 8px;
+      }
+
+      .journey-step-target {
+        margin-bottom: 8px;
+        color: var(--vscode-descriptionForeground, #cccccc);
+      }
+
+      .journey-step-buttons {
+        display: flex;
+        gap: 8px;
+      }
+
+      .journey-raw {
+        font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
         white-space: pre-wrap;
       }
 
@@ -435,7 +480,7 @@
 
         <div class="result-group">
           <div class="result-label">Result</div>
-          <pre id="result"></pre>
+          <div id="result"></div>
           <div class="loading" id="loading">
             <span class="spinner">⏳</span> Processing...
           </div>

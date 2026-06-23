@@ -21,6 +21,8 @@ const openaiOAuthDividerEl = document.getElementById("openai-oauth-divider");
 
 let currentUser = null;
 let idToken = null;
+let activeJourney = null;
+let activeStepIndex = 0;
 
 // Tab Management
 const tabBtns = document.querySelectorAll(".tab-btn");
@@ -28,7 +30,8 @@ const tabContents = document.querySelectorAll(".tab-content");
 
 // Backend URL
 const BACKEND_URL = "https://gpt-extension.onrender.com";
-const GOOGLE_CLIENT_ID = "169950079174-j1ai4pdp22dem45484iuve3tn6gokpot.apps.googleusercontent.com";
+const GOOGLE_CLIENT_ID =
+  "169950079174-j1ai4pdp22dem45484iuve3tn6gokpot.apps.googleusercontent.com";
 const REDIRECT_URL = chrome.identity.getRedirectURL();
 
 function generateOAuthState() {
@@ -164,7 +167,7 @@ async function loginWithOpenAI() {
     const health = await backendRequest("/health", { method: "GET" });
     if (!health.oauthConfigured) {
       throw new Error(
-        "Backend OAuth is not configured. Set OPENAI_CLIENT_ID and OPENAI_CLIENT_SECRET on Render."
+        "Backend OAuth is not configured. Set OPENAI_CLIENT_ID and OPENAI_CLIENT_SECRET on Render.",
       );
     }
 
@@ -225,7 +228,7 @@ async function loginWithOpenAI() {
     if (message.includes("Authorization page could not be loaded")) {
       showKeyStatus(
         "OpenAI login failed: backend OAuth is not configured or redirect URI is not allowed.",
-        "error"
+        "error",
       );
     } else {
       showKeyStatus(`OpenAI login failed: ${message}`, "error");
@@ -250,7 +253,10 @@ async function loadOpenAIKeyFromBackend() {
 
     if (data.apiKey) {
       apiKeyInput.value = data.apiKey;
-      await chrome.storage.sync.set({ openaiApiKey: data.apiKey, authMethod: "firebase" });
+      await chrome.storage.sync.set({
+        openaiApiKey: data.apiKey,
+        authMethod: "firebase",
+      });
     }
   } catch (error) {
     console.error("Error loading OpenAI key:", error);
@@ -298,10 +304,16 @@ saveKeyBtn.addEventListener("click", async () => {
         headers: { Authorization: `Bearer ${idToken}` },
         body: JSON.stringify({ openaiApiKey: key }),
       });
-      await chrome.storage.sync.set({ openaiApiKey: key, authMethod: "firebase" });
+      await chrome.storage.sync.set({
+        openaiApiKey: key,
+        authMethod: "firebase",
+      });
       showKeyStatus("✅ OpenAI key saved to backend", "success");
     } else {
-      await chrome.storage.sync.set({ openaiApiKey: key, authMethod: "manual" });
+      await chrome.storage.sync.set({
+        openaiApiKey: key,
+        authMethod: "manual",
+      });
       showKeyStatus("✅ API key saved locally", "success");
     }
 
@@ -351,13 +363,14 @@ async function updateAuthStatus() {
   try {
     const data = await chrome.storage.sync.get(["openaiApiKey", "authMethod"]);
     if (data.openaiApiKey) {
-      const method = data.authMethod === "firebase"
-        ? "Firebase"
-        : data.authMethod === "oauth+firebase"
-          ? "OpenAI OAuth + Firebase"
-        : data.authMethod === "oauth"
-          ? "OpenAI OAuth"
-          : "Manual API Key";
+      const method =
+        data.authMethod === "firebase"
+          ? "Firebase"
+          : data.authMethod === "oauth+firebase"
+            ? "OpenAI OAuth + Firebase"
+            : data.authMethod === "oauth"
+              ? "OpenAI OAuth"
+              : "Manual API Key";
       authStatusEl.textContent = `✅ Authenticated via ${method}`;
       authStatusEl.className = "auth-status authenticated";
     } else {
@@ -374,6 +387,166 @@ function showKeyStatus(message, type) {
   keyStatusEl.textContent = message;
   keyStatusEl.className = `status-message ${type}`;
 }
+
+function escapeHtml(value) {
+  return String(value || "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function normalizeJourney(aiResult) {
+  const journey = aiResult?.journey;
+  if (!journey || !Array.isArray(journey.steps)) return null;
+
+  return {
+    summary: String(journey.summary || "Follow these steps on the page."),
+    steps: journey.steps.map((step, index) => ({
+      title: String(step?.title || `Step ${index + 1}`),
+      action: String(step?.action || "Continue"),
+      targetText: String(step?.targetText || ""),
+      navigateUrl: String(step?.navigateUrl || ""),
+      reason: String(step?.reason || ""),
+    })),
+  };
+}
+
+async function runJourneyStep(stepIndex) {
+  if (!activeJourney) return;
+  const step = activeJourney.steps[stepIndex];
+  if (!step) return;
+
+  if (step.navigateUrl) {
+    const navResponse = await chrome.runtime.sendMessage({
+      type: "NAVIGATE_TO_URL",
+      url: step.navigateUrl,
+    });
+
+    if (!navResponse?.ok) {
+      throw new Error(navResponse?.error || "Failed to navigate to required page.");
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+  }
+
+  if (step.targetText) {
+    const highlightResponse = await chrome.runtime.sendMessage({
+      type: "HIGHLIGHT_TARGET",
+      targetText: step.targetText,
+    });
+
+    if (!highlightResponse?.ok) {
+      throw new Error(highlightResponse?.error || "Could not locate target on current page.");
+    }
+  }
+}
+
+function renderActiveJourney() {
+  if (!activeJourney || !activeJourney.steps.length) {
+    resultEl.innerHTML = `<div class="journey-raw">No guidance returned.</div>`;
+    return;
+  }
+
+  const step = activeJourney.steps[activeStepIndex];
+  const isFirst = activeStepIndex === 0;
+  const isLast = activeStepIndex === activeJourney.steps.length - 1;
+
+  resultEl.innerHTML = `
+    <div class="journey-toolbar">
+      <button id="journey-prev" class="btn-secondary" ${isFirst ? "disabled" : ""}>Previous</button>
+      <button id="journey-run-step">Guide Me Here</button>
+      <button id="journey-next" class="btn-secondary" ${isLast ? "disabled" : ""}>Next</button>
+    </div>
+    <div class="journey-summary">${escapeHtml(activeJourney.summary)}</div>
+    <div class="journey-progress">Step ${activeStepIndex + 1} of ${activeJourney.steps.length}</div>
+    <div class="journey-step">
+      <div class="journey-step-title">${activeStepIndex + 1}. ${escapeHtml(step.title)}</div>
+      <div class="journey-step-action">${escapeHtml(step.action)}</div>
+      ${step.navigateUrl ? `<div class="journey-step-target">Navigate to: <strong>${escapeHtml(step.navigateUrl)}</strong></div>` : ""}
+      ${step.targetText ? `<div class="journey-step-target">Target: <strong>${escapeHtml(step.targetText)}</strong></div>` : ""}
+      ${step.reason ? `<div class="help-text">${escapeHtml(step.reason)}</div>` : ""}
+      <div class="journey-step-buttons">
+        ${step.navigateUrl ? `<button id="journey-nav-only" class="btn-secondary">Open Required Page</button>` : ""}
+        ${step.targetText ? `<button id="journey-highlight-only" class="btn-secondary">Find Target</button>` : ""}
+      </div>
+    </div>
+  `;
+}
+
+function renderJourney(aiResult) {
+  activeJourney = normalizeJourney(aiResult);
+  activeStepIndex = 0;
+
+  if (!activeJourney || !activeJourney.steps.length) {
+    resultEl.innerHTML = `<div class="journey-raw">${escapeHtml(aiResult?.message || "No guidance returned.")}</div>`;
+    return;
+  }
+
+  renderActiveJourney();
+}
+
+async function safeGuideStep(stepIndex) {
+  try {
+    await runJourneyStep(stepIndex);
+  } catch (error) {
+    resultEl.insertAdjacentHTML(
+      "afterbegin",
+      `<div class="status-message error" style="display:block; margin-bottom: 8px;">${escapeHtml(error.message || "Failed to guide this step.")}</div>`,
+    );
+  }
+}
+
+resultEl.addEventListener("click", async (event) => {
+  const target = event.target;
+  if (!(target instanceof HTMLElement)) return;
+
+  if (target.id === "journey-prev") {
+    if (activeStepIndex > 0) {
+      activeStepIndex -= 1;
+      renderActiveJourney();
+      await safeGuideStep(activeStepIndex);
+    }
+    return;
+  }
+
+  if (target.id === "journey-next") {
+    if (activeJourney && activeStepIndex < activeJourney.steps.length - 1) {
+      activeStepIndex += 1;
+      renderActiveJourney();
+      await safeGuideStep(activeStepIndex);
+    }
+    return;
+  }
+
+  if (target.id === "journey-run-step") {
+    await safeGuideStep(activeStepIndex);
+    return;
+  }
+
+  if (target.id === "journey-nav-only") {
+    const step = activeJourney?.steps?.[activeStepIndex];
+    if (!step?.navigateUrl) return;
+
+    const response = await chrome.runtime.sendMessage({
+      type: "NAVIGATE_TO_URL",
+      url: step.navigateUrl,
+    });
+
+    if (!response?.ok) {
+      resultEl.insertAdjacentHTML(
+        "afterbegin",
+        `<div class="status-message error" style="display:block; margin-bottom: 8px;">${escapeHtml(response?.error || "Failed to open required page.")}</div>`,
+      );
+    }
+    return;
+  }
+
+  if (target.id === "journey-highlight-only") {
+    await safeGuideStep(activeStepIndex);
+  }
+});
 
 // Main task execution
 runBtn.addEventListener("click", async () => {
@@ -393,14 +566,15 @@ runBtn.addEventListener("click", async () => {
     const response = await chrome.runtime.sendMessage({
       type: "GET_PAGE_CONTEXT",
       task: taskEl.value,
-      apiKey: apiKey,
+      apiKey,
     });
 
     if (!response.ok) {
       throw new Error(response.error);
     }
 
-    resultEl.textContent = response.aiResult.message || JSON.stringify(response.aiResult, null, 2);
+    renderJourney(response.aiResult);
+    await safeGuideStep(0);
   } catch (error) {
     resultEl.textContent = `❌ Error: ${error.message}`;
   } finally {

@@ -184,28 +184,94 @@ app.post("/ai-task", async (req, res) => {
   });
 
   try {
+    const pageHtml = typeof pageContext?.html === "string" ? pageContext.html : "";
+    const pageUrl = url || pageContext?.url || "";
+    const pageTitle = title || pageContext?.title || "";
+
     const response = await openai.responses.create({
       model: "gpt-4.1-mini",
       input: [
         {
           role: "user",
           content: `
-URL: ${url}
-Title: ${title}
+You are a web navigation assistant.
+
+Return ONLY valid JSON with this exact schema:
+{
+  "summary": "short overview",
+  "currentUrl": "${pageUrl}",
+  "steps": [
+    {
+      "title": "short step title",
+      "action": "what to do",
+      "targetText": "exact visible text/id/label to find in current page html",
+      "navigateUrl": "absolute url or empty string",
+      "reason": "optional short reason"
+    }
+  ]
+}
+
+Rules:
+- 3 to 8 steps.
+- If current page is wrong for task, first step must include navigateUrl.
+- Prefer targetText that exists in provided HTML.
+- If no navigation needed, use navigateUrl as empty string.
+- No markdown. No extra text outside JSON.
+- Do not include destructive actions.
+
+Current URL: ${pageUrl}
+Current Title: ${pageTitle}
 
 Task:
 ${task}
 
+Current page HTML (full):
+${pageHtml}
+
 Page context:
 ${JSON.stringify(pageContext).slice(0, 20000)}
-
-Return concise advice. Do not perform destructive actions.
 `,
         },
       ],
     });
 
-    res.json({ message: response.output_text });
+    const rawText = response.output_text || "";
+    let journey;
+
+    try {
+      journey = JSON.parse(rawText);
+    } catch {
+      journey = {
+        summary: rawText || "Follow these steps on the current page.",
+        currentUrl: pageUrl,
+        steps: [],
+      };
+    }
+
+    if (!journey || typeof journey !== "object") {
+      journey = {
+        summary: "Follow these steps on the current page.",
+        currentUrl: pageUrl,
+        steps: [],
+      };
+    }
+
+    if (!Array.isArray(journey.steps)) {
+      journey.steps = [];
+    }
+
+    journey.steps = journey.steps.map((step) => ({
+      title: String(step?.title || "Step"),
+      action: String(step?.action || "Continue"),
+      targetText: String(step?.targetText || ""),
+      navigateUrl: String(step?.navigateUrl || ""),
+      reason: String(step?.reason || ""),
+    }));
+
+    res.json({
+      message: rawText,
+      journey,
+    });
   } catch (error) {
     console.error("OpenAI API error:", error);
     res.status(500).json({
