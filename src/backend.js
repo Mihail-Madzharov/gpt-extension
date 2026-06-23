@@ -1,7 +1,7 @@
 import fs from "fs";
 import path from "path";
 import express from "express";
-import admin from "firebase-admin";
+import { initializeApp, cert, getApps } from "firebase-admin/app";
 import { getFirestore, FieldValue } from "firebase-admin/firestore";
 import OpenAI from "openai";
 
@@ -16,7 +16,7 @@ let db = null;
 
 try {
   // Check if already initialized
-  if (admin.apps.length > 0) {
+  if (getApps().length > 0) {
     console.log("Firebase Admin already initialized, skipping init...");
     firebaseAdminInitialized = true;
     db = getFirestore();
@@ -46,14 +46,9 @@ try {
       console.log(`  Project ID in credentials: ${serviceAccount.project_id}`);
     }
 
-    console.log("Checking if admin.credential exists...");
-    if (!admin.credential) {
-      throw new Error("firebase-admin credential module not available. Check firebase-admin installation.");
-    }
-
     console.log("Initializing Firebase Admin with credentials...");
-    admin.initializeApp({
-      credential: admin.credential.cert(serviceAccount),
+    initializeApp({
+      credential: cert(serviceAccount),
       projectId: firebaseProjectId,
     });
     firebaseAdminInitialized = true;
@@ -363,7 +358,7 @@ app.get("/health", (req, res) => {
       OAUTH_CONFIG.clientId && OAUTH_CONFIG.clientSecret
     ),
     firebaseAdmin:
-      firebaseAdminInitialized && admin.apps.length > 0,
+      firebaseAdminInitialized && getApps().length > 0,
     firebaseProjectId: firebaseProjectId,
   });
 });
