@@ -37,7 +37,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     return true;
   } else if (message.type === "HIGHLIGHT_TARGET") {
-    highlightTargetOnActiveTab(message.targetText)
+    highlightTargetOnActiveTab(message.cssSelector)
       .then(sendResponse)
       .catch((error) => {
         console.error(error);
@@ -160,24 +160,80 @@ async function handleGetPageContext(task, apiKey) {
 }
 
 function getPageContextFromDom() {
+  const escapeSelectorToken = (value) => {
+    const raw = String(value || "").trim();
+    if (!raw) return "";
+    if (window.CSS && typeof window.CSS.escape === "function") {
+      return window.CSS.escape(raw);
+    }
+    return raw.replace(/[^a-zA-Z0-9_-]/g, "\\$&");
+  };
+
+  const buildSelectorPath = (el) => {
+    if (!(el instanceof Element)) return "";
+
+    if (el.id) {
+      return `#${escapeSelectorToken(el.id)}`;
+    }
+
+    const segments = [];
+    let current = el;
+    let safety = 0;
+
+    while (current && current.nodeType === Node.ELEMENT_NODE && safety < 12) {
+      const tag = (current.tagName || "").toLowerCase();
+      if (!tag) break;
+
+      if (current.id) {
+        segments.unshift(`#${escapeSelectorToken(current.id)}`);
+        return segments.join(" > ");
+      }
+
+      const classNames = String(current.className || "")
+        .split(/\s+/)
+        .map((name) => name.trim())
+        .filter(Boolean)
+        .slice(0, 2)
+        .map((name) => `.${escapeSelectorToken(name)}`)
+        .join("");
+
+      if (!classNames) {
+        return "";
+      }
+
+      segments.unshift(`${tag}${classNames}`);
+      current = current.parentElement;
+      safety += 1;
+    }
+
+    return segments.length >= 2 ? segments.join(" > ") : "";
+  };
+
   const elements = [
     ...document.querySelectorAll("button, a, input, textarea, select"),
   ]
-    .slice(0, 200)
-    .map((el, index) => ({
-      index,
-      tag: el.tagName,
-      text:
-        el.innerText ||
-        el.value ||
-        el.placeholder ||
-        el.getAttribute("aria-label") ||
-        "",
-      id: el.id || "",
-      name: el.getAttribute("name") || "",
-      type: el.getAttribute("type") || "",
-      href: el.href || "",
-    }));
+    .map((el, index) => {
+      const cssSelector = buildSelectorPath(el);
+      if (!cssSelector) return null;
+
+      return {
+        index,
+        tag: el.tagName,
+        text:
+          el.innerText ||
+          el.value ||
+          el.placeholder ||
+          el.getAttribute("aria-label") ||
+          "",
+        id: el.id || "",
+        name: el.getAttribute("name") || "",
+        type: el.getAttribute("type") || "",
+        href: el.href || "",
+        cssSelector,
+      };
+    })
+    .filter(Boolean)
+    .slice(0, 250);
 
   return {
     url: location.href,
@@ -188,9 +244,20 @@ function getPageContextFromDom() {
   };
 }
 
-async function highlightTargetOnActiveTab(targetText) {
-  if (!targetText || typeof targetText !== "string") {
-    throw new Error("Target text is required.");
+async function highlightTargetOnActiveTab(cssSelector) {
+  const normalizedCssSelector = String(cssSelector || "").trim();
+
+  if (!normalizedCssSelector) {
+    throw new Error("CSS selector is required.");
+  }
+
+  if (/:nth-child|:nth-of-type|:contains|:has\(|:text\(/i.test(normalizedCssSelector)) {
+    throw new Error("Selector must not use nth-child or text-based pseudo selectors.");
+  }
+
+  const isSimpleIdSelector = /^#[A-Za-z0-9_-]+$/.test(normalizedCssSelector);
+  if (!/[#.]/.test(normalizedCssSelector) || (!/[ >]/.test(normalizedCssSelector) && !isSimpleIdSelector)) {
+    throw new Error("Selector must be a full id/class path (for example: #app .panel .submit-button).");
   }
 
   const [tab] = await chrome.tabs.query({
@@ -204,93 +271,83 @@ async function highlightTargetOnActiveTab(targetText) {
 
   const [{ result }] = await chrome.scripting.executeScript({
     target: { tabId: tab.id },
-    func: (needle) => {
-      const selectors = [
-        "button",
-        "a",
-        "input",
-        "textarea",
-        "select",
-        "[role='button']",
-        "[onclick]",
-      ];
+    func: ({ cssSelector }) => {
+      const normalize = (value) =>
+        String(value || "")
+          .toLowerCase()
+          .replace(/\s+/g, " ")
+          .trim();
+      const isVisible = (el) => {
+        const style = window.getComputedStyle(el);
+        if (style.display === "none" || style.visibility === "hidden") return false;
+        if (Number(style.opacity) === 0) return false;
+        const rect = el.getBoundingClientRect();
+        return rect.width >= 4 && rect.height >= 4;
+      };
+      try {
+        const directBySelector = document.querySelector(cssSelector);
+        if (!directBySelector || !isVisible(directBySelector)) {
+          return {
+            ok: false,
+            error: `Could not find a visible page element for selector \"${cssSelector}\"`,
+          };
+        }
 
-      const normalize = (value) => (value || "").trim().toLowerCase();
-      const target = normalize(needle);
-      const candidates = [...document.querySelectorAll(selectors.join(","))];
+        const selectorText = normalize(
+          directBySelector.innerText ||
+            directBySelector.textContent ||
+            directBySelector.getAttribute("aria-label") ||
+            directBySelector.getAttribute("title") ||
+            directBySelector.id,
+        );
 
-      const scored = candidates
-        .map((el) => {
-          const parts = [
-            el.innerText,
-            el.value,
-            el.getAttribute("aria-label"),
-            el.getAttribute("placeholder"),
-            el.id,
-            el.getAttribute("name"),
-            el.getAttribute("title"),
-          ].map(normalize);
+        const existing = document.getElementById("gpt-assistant-highlight");
+        if (existing) existing.remove();
 
-          const combined = parts.join(" ").trim();
-          if (!combined) return null;
+        directBySelector.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
+        directBySelector.style.outline = "3px solid #10a37f";
+        directBySelector.style.outlineOffset = "2px";
 
-          let score = 0;
-          if (combined === target) score += 100;
-          if (combined.startsWith(target)) score += 50;
-          if (combined.includes(target)) score += 25;
-          if (parts.some((p) => p === target)) score += 80;
-          if (parts.some((p) => p.includes(target))) score += 20;
-          if (el.tagName === "BUTTON" || el.tagName === "A") score += 5;
+        const badge = document.createElement("div");
+        badge.id = "gpt-assistant-highlight";
+        badge.textContent = `Next step selector: ${cssSelector}`;
+        badge.style.position = "fixed";
+        badge.style.zIndex = "2147483647";
+        badge.style.right = "16px";
+        badge.style.bottom = "16px";
+        badge.style.padding = "10px 12px";
+        badge.style.borderRadius = "8px";
+        badge.style.background = "#10a37f";
+        badge.style.color = "white";
+        badge.style.fontFamily = "system-ui, -apple-system, Segoe UI, Roboto, sans-serif";
+        badge.style.fontSize = "12px";
+        badge.style.boxShadow = "0 8px 24px rgba(0,0,0,0.25)";
+        document.body.appendChild(badge);
 
-          return { el, score, combined };
-        })
-        .filter(Boolean)
-        .sort((a, b) => b.score - a.score);
+        setTimeout(() => {
+          directBySelector.style.outline = "";
+          directBySelector.style.outlineOffset = "";
+          const marker = document.getElementById("gpt-assistant-highlight");
+          if (marker) marker.remove();
+        }, 3500);
 
-      const match = scored[0];
-      if (!match || match.score <= 0) {
+        return {
+          ok: true,
+          matchedText: selectorText,
+          matchedBy: "cssSelector",
+        };
+      } catch {
         return {
           ok: false,
-          error: `Could not find a page element matching "${needle}"`,
+          error: `Invalid CSS selector: \"${cssSelector}\"`,
         };
       }
-
-      const existing = document.getElementById("gpt-assistant-highlight");
-      if (existing) existing.remove();
-
-      match.el.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
-      match.el.style.outline = "3px solid #10a37f";
-      match.el.style.outlineOffset = "2px";
-
-      const badge = document.createElement("div");
-      badge.id = "gpt-assistant-highlight";
-      badge.textContent = `Next step: ${needle}`;
-      badge.style.position = "fixed";
-      badge.style.zIndex = "2147483647";
-      badge.style.right = "16px";
-      badge.style.bottom = "16px";
-      badge.style.padding = "10px 12px";
-      badge.style.borderRadius = "8px";
-      badge.style.background = "#10a37f";
-      badge.style.color = "white";
-      badge.style.fontFamily = "system-ui, -apple-system, Segoe UI, Roboto, sans-serif";
-      badge.style.fontSize = "12px";
-      badge.style.boxShadow = "0 8px 24px rgba(0,0,0,0.25)";
-      document.body.appendChild(badge);
-
-      setTimeout(() => {
-        match.el.style.outline = "";
-        match.el.style.outlineOffset = "";
-        const marker = document.getElementById("gpt-assistant-highlight");
-        if (marker) marker.remove();
-      }, 3500);
-
-      return {
-        ok: true,
-        matchedText: match.combined,
-      };
     },
-    args: [targetText],
+    args: [
+      {
+        cssSelector: normalizedCssSelector,
+      },
+    ],
   });
 
   return result;

@@ -456,7 +456,7 @@ function normalizeJourney(aiResult) {
     steps: journey.steps.map((step, index) => ({
       title: String(step?.title || `Step ${index + 1}`),
       action: String(step?.action || "Continue"),
-      targetText: String(step?.targetText || ""),
+      cssSelector: String(step?.cssSelector || ""),
       navigateUrl: String(step?.navigateUrl || ""),
       reason: String(step?.reason || ""),
     })),
@@ -554,10 +554,10 @@ async function runJourneyStep(stepIndex) {
   }
 
   // Only highlight the target on the current page
-  if (step.targetText) {
+  if (step.cssSelector) {
     const highlightResponse = await chrome.runtime.sendMessage({
       type: "HIGHLIGHT_TARGET",
-      targetText: step.targetText,
+      cssSelector: step.cssSelector,
     });
 
     if (!highlightResponse?.ok) {
@@ -579,7 +579,7 @@ function renderActiveJourney() {
   resultEl.innerHTML = `
     <div class="journey-toolbar">
       <button id="journey-prev" class="btn-secondary" ${isFirst ? "disabled" : ""}>Previous</button>
-      <button id="journey-run-step">Guide Me Here</button>
+      <button id="journey-run-step">${step.cssSelector ? "Take Me to Target" : "Guide Me Here"}</button>
       <button id="journey-next" class="btn-secondary" ${isLast ? "disabled" : ""}>Next</button>
     </div>
     <div class="journey-summary">${escapeHtml(activeJourney.summary)}</div>
@@ -588,17 +588,41 @@ function renderActiveJourney() {
       <div class="journey-step-title">${activeStepIndex + 1}. ${escapeHtml(step.title)}</div>
       <div class="journey-step-action">${escapeHtml(step.action)}</div>
       ${step.navigateUrl ? `<div class="journey-step-target">Navigate to: <a href="${escapeHtml(step.navigateUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(step.navigateUrl)}</a></div>` : ""}
-      ${step.targetText ? `<div class="journey-step-target">Target: <strong>${escapeHtml(step.targetText)}</strong></div>` : ""}
+      ${step.cssSelector ? `<div class="journey-step-target">Selector: <strong>${escapeHtml(step.cssSelector)}</strong></div>` : ""}
       ${step.reason ? `<div class="help-text">${escapeHtml(step.reason)}</div>` : ""}
       <div class="journey-step-buttons">
         ${step.navigateUrl ? `<button id="journey-nav-only" class="btn-secondary">Open Required Page</button>` : ""}
-        ${step.targetText ? `<button id="journey-highlight-only" class="btn-secondary">Find Target</button>` : ""}
+        ${step.cssSelector ? `<button id="journey-highlight-only" class="btn-secondary">Take Me to Target</button>` : ""}
       </div>
     </div>
   `;
 }
 
 function renderJourney(aiResult) {
+  if (aiResult?.mode === "html_extraction") {
+    activeJourney = null;
+    activeStepIndex = 0;
+
+    const extraction = aiResult?.extraction || {};
+    const hasHtml = Boolean(String(extraction?.html || "").trim());
+    const targetLabel = String(extraction?.target || "requested element");
+
+    resultEl.innerHTML = `
+      <div class="journey-summary">Element HTML Extraction</div>
+      <div class="journey-step-target">${escapeHtml(aiResult?.message || "")}</div>
+      <div class="journey-step-target">Target: <strong>${escapeHtml(targetLabel)}</strong></div>
+      ${hasHtml ? `<div class="journey-raw">${escapeHtml(extraction.html)}</div>` : `<div class="journey-raw">No HTML extracted.</div>`}
+    `;
+    return;
+  }
+
+  if (aiResult?.mode === "page_explanation") {
+    activeJourney = null;
+    activeStepIndex = 0;
+    resultEl.innerHTML = `<div class="journey-summary">Current Page Explanation</div><div class="journey-raw">${escapeHtml(aiResult?.message || "No explanation returned.")}</div>`;
+    return;
+  }
+
   activeJourney = normalizeJourney(aiResult);
   activeStepIndex = 0;
 

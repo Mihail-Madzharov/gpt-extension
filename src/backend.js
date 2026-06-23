@@ -188,12 +188,250 @@ app.post("/ai-task", async (req, res) => {
     const pageUrl = url || pageContext?.url || "";
     const pageTitle = title || pageContext?.title || "";
 
-    const response = await openai.responses.create({
-      model: "gpt-4.1-mini",
-      input: [
-        {
-          role: "user",
-          content: `
+    const taskText = String(task || "").trim();
+    const normalizedTaskText = taskText.toLowerCase();
+
+    const extractionIntentPatterns = [
+      // English
+      /\bextract\b/i,
+      /\bget\b/i,
+      /\bshow\b/i,
+      /\bfind\b/i,
+      /\breturn\b/i,
+      /\bgive\s+me\b/i,
+
+      // Bulgarian
+      /извлечи/i,
+      /покажи/i,
+      /намери/i,
+      /върни/i,
+      /дай\s+ми/i,
+      /вземи/i,
+    ];
+
+    const htmlTargetPatterns = [
+      // English
+      /\bhtml\b/i,
+      /\bouterhtml\b/i,
+      /\bmarkup\b/i,
+      /\bdom\b/i,
+      /\belement\b/i,
+      /\bselector\b/i,
+      /\bid\b/i,
+      /\bclass\b/i,
+
+      // Bulgarian
+      /html/i,
+      /маркъп/i,
+      /dom/i,
+      /елемент/i,
+      /селектор/i,
+      /идентификатор/i,
+      /клас/i,
+    ];
+
+    const hasExtractionIntent = extractionIntentPatterns.some((pattern) =>
+      pattern.test(normalizedTaskText),
+    );
+    const hasHtmlTarget = htmlTargetPatterns.some((pattern) =>
+      pattern.test(normalizedTaskText),
+    );
+    const isHtmlExtractionTask = hasExtractionIntent && hasHtmlTarget;
+
+    if (isHtmlExtractionTask) {
+      const shouldReplyInBulgarian = /[\u0400-\u04FF]/.test(taskText);
+      const extractionLanguage = shouldReplyInBulgarian ? "Bulgarian" : "English";
+
+      const extractionResponse = await openai.responses.create({
+        model: "gpt-4.1-mini",
+        input: [
+          {
+            role: "user",
+            content: `
+You are an HTML extraction assistant.
+
+The user asked: "${taskText}"
+
+Respond in ${extractionLanguage}.
+
+Return ONLY valid JSON in this exact schema:
+{
+  "found": true,
+  "target": "short description of requested element",
+  "html": "outerHTML for the best matching element, or empty string",
+  "reason": "short reason if not found"
+}
+
+Rules:
+- Use the provided HTML as the only source of truth.
+- If multiple candidates exist, return the most specific and relevant one.
+- Keep full attributes in html.
+- If not found, set found=false and html="".
+- No markdown and no extra text outside JSON.
+
+Current URL: ${pageUrl}
+Current Title: ${pageTitle}
+
+Current page HTML (truncated):
+${pageHtml.slice(0, 40000)}
+`,
+          },
+        ],
+      });
+
+      const rawExtractionText = String(extractionResponse.output_text || "").trim();
+      let extraction;
+
+      try {
+        extraction = JSON.parse(rawExtractionText);
+      } catch {
+        extraction = {
+          found: false,
+          target: taskText || "requested element",
+          html: "",
+          reason: rawExtractionText || "Could not parse extraction response.",
+        };
+      }
+
+      const found = Boolean(extraction?.found) && Boolean(String(extraction?.html || "").trim());
+      const target = String(extraction?.target || taskText || "requested element").trim();
+      const extractedHtml = String(extraction?.html || "");
+      const reason = String(extraction?.reason || "").trim();
+
+      return res.json({
+        mode: "html_extraction",
+        message: found
+          ? `${shouldReplyInBulgarian ? "Намерих HTML за" : "Found HTML for"}: ${target}`
+          : `${shouldReplyInBulgarian ? "Не успях да намеря точен елемент" : "Could not find an exact matching element"}${reason ? `. ${reason}` : "."}`,
+        extraction: {
+          found,
+          target,
+          html: extractedHtml,
+          reason,
+        },
+        journey: {
+          summary: "HTML extraction",
+          currentUrl: pageUrl,
+          steps: [],
+        },
+      });
+    }
+
+    const explanationIntentPatterns = [
+      // English
+      /\bexplain\b/i,
+      /\bdescribe\b/i,
+      /\bsummari[sz]e\b/i,
+      /\boverview\b/i,
+      /\bwalk\s+me\s+through\b/i,
+      /\bwhat\s+is\s+this\b/i,
+      /\bwhat\s+does\s+this\s+(page|screen|site|website)\s+do\b/i,
+      /\bhow\s+does\s+this\s+(page|screen|site|website)\s+work\b/i,
+
+      // Bulgarian
+      /обясни/i,
+      /опиши/i,
+      /резюмирай/i,
+      /какво\s+е\s+това/i,
+      /за\s+какво\s+е\s+тази\s+страница/i,
+      /как\s+работи\s+тази\s+страница/i,
+      /разкажи\s+ми\s+за\s+тази\s+страница/i,
+      /обобщи/i,
+    ];
+
+    const pageReferencePatterns = [
+      // English
+      /\bpage\b/i,
+      /\bscreen\b/i,
+      /\bsite\b/i,
+      /\bwebsite\b/i,
+      /\bcurrent\b/i,
+      /\bthis\s+tab\b/i,
+
+      // Bulgarian
+      /страниц/i,
+      /екран/i,
+      /сайт/i,
+      /уебсайт/i,
+      /текущ/i,
+      /този\s+таб/i,
+      /тази\s+страница/i,
+    ];
+
+    const hasExplanationIntent = explanationIntentPatterns.some((pattern) =>
+      pattern.test(normalizedTaskText),
+    );
+    const hasPageReference = pageReferencePatterns.some((pattern) =>
+      pattern.test(normalizedTaskText),
+    );
+    const isPageExplanationTask = hasExplanationIntent && hasPageReference;
+
+    if (isPageExplanationTask) {
+      const shouldReplyInBulgarian = /[\u0400-\u04FF]/.test(taskText);
+      const explanationLanguage = shouldReplyInBulgarian
+        ? "Bulgarian"
+        : "English";
+
+      const explanationResponse = await openai.responses.create({
+        model: "gpt-4.1-mini",
+        input: [
+          {
+            role: "user",
+            content: `
+You are a web page explanation assistant.
+
+The user asked: "${taskText}"
+
+Respond in ${explanationLanguage}.
+
+Write a concise explanation of the CURRENT page, based on the provided URL, title, visible text, and HTML.
+
+Requirements:
+- Keep it factual and grounded in the provided page data.
+- Start with a 1-2 sentence summary.
+- Then provide 4-8 short bullet points describing what this page is, key sections, and what the user can do here.
+- Mention uncertain points as "might" or "appears to".
+- No markdown headings.
+
+Current URL: ${pageUrl}
+Current Title: ${pageTitle}
+
+Visible page text (truncated):
+${String(pageContext?.text || "").slice(0, 20000)}
+
+Current page HTML (truncated):
+${pageHtml.slice(0, 30000)}
+`,
+          },
+        ],
+      });
+
+      const explanationText =
+        String(explanationResponse.output_text || "").trim() ||
+        "This page appears to contain content, but I could not confidently summarize it from the available context.";
+
+      return res.json({
+        mode: "page_explanation",
+        message: explanationText,
+        journey: {
+          summary: "Current page explanation",
+          currentUrl: pageUrl,
+          steps: [],
+        },
+      });
+    }
+
+    const extractedSelectors = Array.isArray(pageContext?.elements)
+      ? pageContext.elements
+          .map((item) => String(item?.cssSelector || "").trim())
+          .filter(Boolean)
+      : [];
+    const extractedSelectorsText = extractedSelectors.length
+      ? extractedSelectors.map((selector) => `- ${selector}`).join("\n")
+      : "- (none provided)";
+    const extractedSelectorSet = new Set(extractedSelectors);
+
+    const buildNavigationPrompt = ({ strictSelectorMode = false } = {}) => `
 You are a web navigation assistant.
 
 Return ONLY valid JSON with this exact schema:
@@ -204,7 +442,7 @@ Return ONLY valid JSON with this exact schema:
     {
       "title": "short step title",
       "action": "what to do",
-      "targetText": "exact visible text/id/label to find in current page html",
+      "cssSelector": "full CSS path to target element using id/class based selectors, or empty string",
       "navigateUrl": "absolute url or empty string",
       "reason": "optional short reason"
     }
@@ -214,10 +452,17 @@ Return ONLY valid JSON with this exact schema:
 Rules:
 - 3 to 8 steps.
 - If current page is wrong for task, first step must include navigateUrl.
-- Prefer targetText that exists in provided HTML.
+- Use ONLY cssSelector to identify targets. Do not return any target text field.
+- For each non-navigation step, cssSelector must be non-empty and valid.
+- Use only selectors from "Extracted selectors from page context" below.
+- cssSelector must be a full selector path from a stable ancestor to the target using id/class selectors.
+- Prefer #id and .class segments, combined with descendant (space) or child (>) combinators.
+- Do not use :nth-child, :nth-of-type, or text-based selector patterns.
+- If no reliable id/class-based path exists for a step, set cssSelector to empty string.
 - If no navigation needed, use navigateUrl as empty string.
 - No markdown. No extra text outside JSON.
 - Do not include destructive actions.
+${strictSelectorMode ? "- CRITICAL: Regenerate all steps now so each non-navigation step has a non-empty full cssSelector path." : ""}
 
 Current URL: ${pageUrl}
 Current Title: ${pageTitle}
@@ -225,48 +470,118 @@ Current Title: ${pageTitle}
 Task:
 ${task}
 
+Extracted selectors from page context:
+${extractedSelectorsText}
+
 Current page HTML (full):
 ${pageHtml}
 
 Page context:
 ${JSON.stringify(pageContext).slice(0, 20000)}
-`,
+`;
+
+    const parseJourneyFromText = (text) => {
+      try {
+        const parsed = JSON.parse(String(text || ""));
+        if (parsed && typeof parsed === "object") {
+          return parsed;
+        }
+      } catch {
+        // Fallback below.
+      }
+
+      return {
+        summary: String(text || "Follow these steps on the current page."),
+        currentUrl: pageUrl,
+        steps: [],
+      };
+    };
+
+    const normalizeJourney = (inputJourney) => {
+      const safeJourney =
+        inputJourney && typeof inputJourney === "object"
+          ? inputJourney
+          : {
+              summary: "Follow these steps on the current page.",
+              currentUrl: pageUrl,
+              steps: [],
+            };
+
+      const safeSteps = Array.isArray(safeJourney.steps) ? safeJourney.steps : [];
+
+      return {
+        ...safeJourney,
+        steps: safeSteps.map((step) => ({
+          title: String(step?.title || "Step"),
+          action: String(step?.action || "Continue"),
+          cssSelector: String(step?.cssSelector || "").trim(),
+          navigateUrl: String(step?.navigateUrl || ""),
+          reason: String(step?.reason || ""),
+        })),
+      };
+    };
+
+    const isValidIdClassPathSelector = (selector) => {
+      const value = String(selector || "").trim();
+      if (!value) return false;
+      if (/:nth-child|:nth-of-type|:contains|:has\(|:text\(/i.test(value)) {
+        return false;
+      }
+      if (!/[#.]/.test(value)) return false;
+      if (/^#[A-Za-z0-9_-]+$/.test(value)) return true;
+      if (!/[ >]/.test(value)) return false;
+
+      const segments = value
+        .split(/\s*>\s*|\s+/)
+        .map((segment) => segment.trim())
+        .filter(Boolean);
+
+      if (segments.length < 2) return false;
+      return segments.every((segment) => /[#.]/.test(segment));
+    };
+
+    const hasStepWithoutRequiredSelector = (normalizedJourney) =>
+      normalizedJourney.steps.some(
+        (step) => {
+          if (step.navigateUrl) return false;
+          const existsInExtractedContext =
+            extractedSelectorSet.size === 0 ||
+            extractedSelectorSet.has(step.cssSelector);
+
+          return (
+            !isValidIdClassPathSelector(step.cssSelector) ||
+            !existsInExtractedContext
+          );
+        },
+      );
+
+    const response = await openai.responses.create({
+      model: "gpt-4.1-mini",
+      input: [
+        {
+          role: "user",
+          content: buildNavigationPrompt(),
         },
       ],
     });
 
-    const rawText = response.output_text || "";
-    let journey;
+    let rawText = String(response.output_text || "");
+    let journey = normalizeJourney(parseJourneyFromText(rawText));
 
-    try {
-      journey = JSON.parse(rawText);
-    } catch {
-      journey = {
-        summary: rawText || "Follow these steps on the current page.",
-        currentUrl: pageUrl,
-        steps: [],
-      };
+    if (hasStepWithoutRequiredSelector(journey)) {
+      const strictResponse = await openai.responses.create({
+        model: "gpt-4.1-mini",
+        input: [
+          {
+            role: "user",
+            content: buildNavigationPrompt({ strictSelectorMode: true }),
+          },
+        ],
+      });
+
+      rawText = String(strictResponse.output_text || rawText);
+      journey = normalizeJourney(parseJourneyFromText(rawText));
     }
-
-    if (!journey || typeof journey !== "object") {
-      journey = {
-        summary: "Follow these steps on the current page.",
-        currentUrl: pageUrl,
-        steps: [],
-      };
-    }
-
-    if (!Array.isArray(journey.steps)) {
-      journey.steps = [];
-    }
-
-    journey.steps = journey.steps.map((step) => ({
-      title: String(step?.title || "Step"),
-      action: String(step?.action || "Continue"),
-      targetText: String(step?.targetText || ""),
-      navigateUrl: String(step?.navigateUrl || ""),
-      reason: String(step?.reason || ""),
-    }));
 
     res.json({
       message: rawText,
