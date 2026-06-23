@@ -408,3 +408,18 @@ runBtn.addEventListener("click", async () => {
     runBtn.disabled = false;
   }
 });
+
+// Keyboard shortcuts: Enter submits, Shift+Enter adds a new line.
+taskEl.addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && !event.shiftKey) {
+    event.preventDefault();
+    runBtn.click();
+  }
+});
+
+apiKeyInput.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    saveKeyBtn.click();
+  }
+});
