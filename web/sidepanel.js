@@ -451,15 +451,57 @@ function normalizeJourney(aiResult) {
   const journey = aiResult?.journey;
   if (!journey || !Array.isArray(journey.steps)) return null;
 
+  const pickBestSelector = (step) => {
+    if (!step || typeof step !== "object") return "";
+
+    const candidates = [
+      step.cssSelector,
+      step.valueElementCssSelector,
+      step.valueCssSelector,
+      step.targetCssSelector,
+      step.targetSelector,
+      step.selector,
+      step?.target?.cssSelector,
+    ];
+
+    for (const candidate of candidates) {
+      const value = String(candidate || "").trim();
+      if (value) return value;
+    }
+
+    return "";
+  };
+
   return {
     summary: String(journey.summary || "Follow these steps on the page."),
     steps: journey.steps.map((step, index) => ({
       title: String(step?.title || `Step ${index + 1}`),
       action: String(step?.action || "Continue"),
-      cssSelector: String(step?.cssSelector || ""),
+      cssSelector: pickBestSelector(step),
       navigateUrl: String(step?.navigateUrl || ""),
       reason: String(step?.reason || ""),
     })),
+  };
+}
+
+function detectSelectorFromRawMessage(message) {
+  const text = String(message || "").trim();
+  if (!text || /\n/.test(text)) return null;
+
+  // Heuristic: accept common selector patterns, including attribute selectors like a[href='...'].
+  const looksLikeSelector =
+    /^#[A-Za-z0-9_-]+$/.test(text) ||
+    /[.#\[]/.test(text) ||
+    /^[a-zA-Z][a-zA-Z0-9_-]*(\[[^\]]+\])+/.test(text);
+
+  if (!looksLikeSelector) return null;
+
+  const hrefMatch = text.match(/href\s*=\s*['\"]([^'\"]+)['\"]/i);
+  const navigateUrl = hrefMatch ? String(hrefMatch[1] || "").trim() : "";
+
+  return {
+    cssSelector: text,
+    navigateUrl,
   };
 }
 
@@ -627,8 +669,24 @@ function renderJourney(aiResult) {
   activeStepIndex = 0;
 
   if (!activeJourney || !activeJourney.steps.length) {
-    resultEl.innerHTML = `<div class="journey-raw">${escapeHtml(aiResult?.message || "No guidance returned.")}</div>`;
-    return;
+    const inferred = detectSelectorFromRawMessage(aiResult?.message);
+    if (!inferred) {
+      resultEl.innerHTML = `<div class="journey-raw">${escapeHtml(aiResult?.message || "No guidance returned.")}</div>`;
+      return;
+    }
+
+    activeJourney = {
+      summary: "Target selector detected.",
+      steps: [
+        {
+          title: "Open target element",
+          action: "Use the detected selector to find the target on page.",
+          cssSelector: inferred.cssSelector,
+          navigateUrl: inferred.navigateUrl,
+          reason: "Converted from selector-only response so you can use action buttons.",
+        },
+      ],
+    };
   }
 
   renderActiveJourney();

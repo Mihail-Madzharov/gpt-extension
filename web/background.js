@@ -255,11 +255,6 @@ async function highlightTargetOnActiveTab(cssSelector) {
     throw new Error("Selector must not use nth-child or text-based pseudo selectors.");
   }
 
-  const isSimpleIdSelector = /^#[A-Za-z0-9_-]+$/.test(normalizedCssSelector);
-  if (!/[#.]/.test(normalizedCssSelector) || (!/[ >]/.test(normalizedCssSelector) && !isSimpleIdSelector)) {
-    throw new Error("Selector must be a full id/class path (for example: #app .panel .submit-button).");
-  }
-
   const [tab] = await chrome.tabs.query({
     active: true,
     currentWindow: true,

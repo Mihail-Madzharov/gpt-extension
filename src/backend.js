@@ -497,6 +497,27 @@ ${JSON.stringify(pageContext).slice(0, 20000)}
       };
     };
 
+    const pickBestSelector = (step) => {
+      if (!step || typeof step !== "object") return "";
+
+      const candidates = [
+        step.cssSelector,
+        step.valueElementCssSelector,
+        step.valueCssSelector,
+        step.targetCssSelector,
+        step.targetSelector,
+        step.selector,
+        step?.target?.cssSelector,
+      ];
+
+      for (const candidate of candidates) {
+        const value = String(candidate || "").trim();
+        if (value) return value;
+      }
+
+      return "";
+    };
+
     const normalizeJourney = (inputJourney) => {
       const safeJourney =
         inputJourney && typeof inputJourney === "object"
@@ -514,7 +535,7 @@ ${JSON.stringify(pageContext).slice(0, 20000)}
         steps: safeSteps.map((step) => ({
           title: String(step?.title || "Step"),
           action: String(step?.action || "Continue"),
-          cssSelector: String(step?.cssSelector || "").trim(),
+          cssSelector: pickBestSelector(step),
           navigateUrl: String(step?.navigateUrl || ""),
           reason: String(step?.reason || ""),
         })),
