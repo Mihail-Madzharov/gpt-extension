@@ -2,6 +2,7 @@ import fs from "fs";
 import path from "path";
 import express from "express";
 import admin from "firebase-admin";
+import { getFirestore, FieldValue } from "firebase-admin/firestore";
 import OpenAI from "openai";
 
 const app = express();
@@ -9,6 +10,7 @@ app.use(express.json({ limit: "25mb" }));
 
 const firebaseServiceAccountPath = process.env.FIREBASE_SERVICE_ACCOUNT_PATH || path.resolve(process.cwd(), "gpt-embeded-firebase-adminsdk-fbsvc-6a91347930.json");
 let firebaseAdminInitialized = false;
+let db = null;
 
 try {
   const serviceAccount = JSON.parse(fs.readFileSync(firebaseServiceAccountPath, "utf8"));
@@ -16,6 +18,7 @@ try {
     credential: admin.credential.cert(serviceAccount),
   });
   firebaseAdminInitialized = true;
+  db = getFirestore();
   console.log(`Firebase Admin initialized using ${firebaseServiceAccountPath}`);
 } catch (error) {
   console.warn(
@@ -24,6 +27,7 @@ try {
   try {
     admin.initializeApp();
     firebaseAdminInitialized = true;
+    db = getFirestore();
     console.log("Firebase Admin initialized using application default credentials.");
   } catch (innerError) {
     console.error("Firebase Admin initialization failed:", innerError);
@@ -247,11 +251,11 @@ app.post("/verify-google-token", async (req, res) => {
     const email = decodedToken.email;
 
     // Create or update user in Firestore
-    await admin.firestore().collection("users").doc(uid).set(
+    await db.collection("users").doc(uid).set(
       {
         email,
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
-        lastSignIn: admin.firestore.FieldValue.serverTimestamp(),
+        createdAt: FieldValue.serverTimestamp(),
+        lastSignIn: FieldValue.serverTimestamp(),
       },
       { merge: true }
     );
@@ -268,7 +272,7 @@ app.get("/openai-key", async (req, res) => {
   if (!decodedToken) return;
 
   try {
-    const userDoc = await admin.firestore().collection("users").doc(decodedToken.uid).get();
+    const userDoc = await db.collection("users").doc(decodedToken.uid).get();
     const data = userDoc.data() || {};
     res.json({ apiKey: data.openaiApiKey || null });
   } catch (error) {
@@ -287,10 +291,10 @@ app.post("/openai-key", async (req, res) => {
   }
 
   try {
-    await admin.firestore().collection("users").doc(decodedToken.uid).set(
+    await db.collection("users").doc(decodedToken.uid).set(
       {
         openaiApiKey,
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
       },
       { merge: true }
     );
@@ -306,9 +310,9 @@ app.delete("/openai-key", async (req, res) => {
   if (!decodedToken) return;
 
   try {
-    await admin.firestore().collection("users").doc(decodedToken.uid).update({
-      openaiApiKey: admin.firestore.FieldValue.delete(),
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    await db.collection("users").doc(decodedToken.uid).update({
+      openaiApiKey: FieldValue.delete(),
+      updatedAt: FieldValue.serverTimestamp(),
     });
     res.json({ ok: true });
   } catch (error) {
