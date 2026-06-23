@@ -2,8 +2,11 @@
   "manifest_version": 3,
   "name": "AI Page Assistant",
   "version": "0.1.0",
-  "permissions": ["sidePanel", "activeTab", "tabs", "scripting"],
+  "permissions": ["sidePanel", "activeTab", "tabs", "scripting", "storage", "windows"],
   "host_permissions": ["<all_urls>"],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' https://www.gstatic.com https://www.googleapis.com; object-src 'self'; connect-src 'self' https://*;"
+  },
   "action": {
     "default_title": "AI Assistant"
   },

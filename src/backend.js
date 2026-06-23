@@ -1,24 +1,155 @@
+import fs from "fs";
+import path from "path";
 import express from "express";
+import admin from "firebase-admin";
 import OpenAI from "openai";
 
 const app = express();
 app.use(express.json({ limit: "25mb" }));
 
-const openai = new OpenAI({
-  apiKey:
-    process.env.OPENAI_API_KEY ??
-    "REDACTED",
+const firebaseServiceAccountPath = process.env.FIREBASE_SERVICE_ACCOUNT_PATH || path.resolve(process.cwd(), "gpt-embeded-firebase-adminsdk-fbsvc-6a91347930.json");
+let firebaseAdminInitialized = false;
+
+try {
+  const serviceAccount = JSON.parse(fs.readFileSync(firebaseServiceAccountPath, "utf8"));
+  admin.initializeApp({
+    credential: admin.credential.cert(serviceAccount),
+  });
+  firebaseAdminInitialized = true;
+  console.log(`Firebase Admin initialized using ${firebaseServiceAccountPath}`);
+} catch (error) {
+  console.warn(
+    `Firebase Admin could not initialize from ${firebaseServiceAccountPath}: ${error.message}`
+  );
+  try {
+    admin.initializeApp();
+    firebaseAdminInitialized = true;
+    console.log("Firebase Admin initialized using application default credentials.");
+  } catch (innerError) {
+    console.error("Firebase Admin initialization failed:", innerError);
+  }
+}
+
+// OAuth Configuration
+const OAUTH_CONFIG = {
+  clientId: process.env.OPENAI_CLIENT_ID,
+  clientSecret: process.env.OPENAI_CLIENT_SECRET,
+  redirectUri: process.env.OPENAI_REDIRECT_URI || "https://gpt-extension.onrender.com/oauth/callback",
+};
+
+// OAuth Authorization Endpoint
+app.get("/oauth/authorize", (req, res) => {
+  try {
+    const redirectUri = encodeURIComponent(OAUTH_CONFIG.redirectUri);
+    const clientId = OAUTH_CONFIG.clientId;
+    
+    if (!clientId) {
+      return res.status(500).json({
+        error: "OAuth not configured on backend",
+      });
+    }
+
+    const authUrl = `https://platform.openai.com/oauth/authorize?client_id=${clientId}&redirect_uri=${redirectUri}&response_type=code&scope=offline_access`;
+    res.redirect(authUrl);
+  } catch (error) {
+    console.error("OAuth authorize error:", error);
+    res.status(500).json({
+      error: error.message || "Failed to start OAuth flow",
+    });
+  }
 });
 
-app.post("/ai-task", async (req, res) => {
-  const { url, title, pageContext, task } = req.body;
+// OAuth Callback Handler - Exchange code for token
+app.post("/oauth/callback", async (req, res) => {
+  const { code, redirectUri } = req.body;
 
-  const response = await openai.responses.create({
-    model: "gpt-4.1-mini",
-    input: [
-      {
-        role: "user",
-        content: `
+  if (!code) {
+    return res.status(400).json({
+      error: "Authorization code is required",
+    });
+  }
+
+  if (!OAUTH_CONFIG.clientId || !OAUTH_CONFIG.clientSecret) {
+    return res.status(500).json({
+      error: "OAuth not configured on backend",
+    });
+  }
+
+  try {
+    // Exchange code for access token
+    const tokenResponse = await fetch("https://api.openai.com/oauth/token", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        client_id: OAUTH_CONFIG.clientId,
+        client_secret: OAUTH_CONFIG.clientSecret,
+        code,
+        redirect_uri: OAUTH_CONFIG.redirectUri,
+        grant_type: "authorization_code",
+      }),
+    });
+
+    if (!tokenResponse.ok) {
+      const errorData = await tokenResponse.json();
+      throw new Error(
+        errorData.error_description || "Failed to exchange code for token"
+      );
+    }
+
+    const tokenData = await tokenResponse.json();
+    const accessToken = tokenData.access_token;
+
+    // Optional: Verify the token by fetching user info
+    const userResponse = await fetch("https://api.openai.com/v1/me", {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    });
+
+    if (!userResponse.ok) {
+      throw new Error("Failed to verify OpenAI account");
+    }
+
+    // Return the access token as the API key
+    res.json({
+      apiKey: accessToken,
+      expiresIn: tokenData.expires_in,
+      tokenType: tokenData.token_type,
+    });
+  } catch (error) {
+    console.error("OAuth callback error:", error);
+    res.status(500).json({
+      error: error.message || "OAuth authentication failed",
+    });
+  }
+});
+
+// AI Task Endpoint
+app.post("/ai-task", async (req, res) => {
+  const { url, title, pageContext, task, apiKey } = req.body;
+
+  // Use the provided API key or fall back to environment variable
+  const key = apiKey || process.env.OPENAI_API_KEY;
+  
+  if (!key) {
+    return res.status(400).json({
+      error: "No API key provided. Please configure your OpenAI API key in the extension settings.",
+    });
+  }
+
+  const openai = new OpenAI({
+    apiKey: key,
+  });
+
+  try {
+    const response = await openai.responses.create({
+      model: "gpt-4.1-mini",
+      input: [
+        {
+          role: "user",
+          content: `
 URL: ${url}
 Title: ${title}
 
@@ -30,11 +161,120 @@ ${JSON.stringify(pageContext).slice(0, 20000)}
 
 Return concise advice. Do not perform destructive actions.
 `,
-      },
-    ],
-  });
+        },
+      ],
+    });
 
-  res.json({ message: response.output_text });
+    res.json({ message: response.output_text });
+  } catch (error) {
+    console.error("OpenAI API error:", error);
+    res.status(500).json({
+      error: error.message || "Failed to process AI task",
+    });
+  }
 });
 
-app.listen(3000, () => console.log("Server running on 3000"));
+function getIdTokenFromRequest(req) {
+  const authHeader = req.headers.authorization || "";
+  const match = authHeader.match(/^Bearer\s+(.+)$/i);
+  return match ? match[1] : null;
+}
+
+async function verifyIdToken(req, res) {
+  if (!firebaseAdminInitialized) {
+    res.status(500).json({ error: "Firebase Admin is not initialized." });
+    return null;
+  }
+
+  const idToken = getIdTokenFromRequest(req);
+  if (!idToken) {
+    res.status(401).json({ error: "Authorization token is required." });
+    return null;
+  }
+
+  try {
+    return await admin.auth().verifyIdToken(idToken);
+  } catch (error) {
+    console.error("Failed to verify ID token:", error);
+    res.status(401).json({ error: "Invalid authorization token." });
+    return null;
+  }
+}
+
+app.get("/openai-key", async (req, res) => {
+  const decodedToken = await verifyIdToken(req, res);
+  if (!decodedToken) return;
+
+  try {
+    const userDoc = await admin.firestore().collection("users").doc(decodedToken.uid).get();
+    const data = userDoc.data() || {};
+    res.json({ apiKey: data.openaiApiKey || null });
+  } catch (error) {
+    console.error("Failed to fetch OpenAI key:", error);
+    res.status(500).json({ error: "Unable to fetch OpenAI key." });
+  }
+});
+
+app.post("/openai-key", async (req, res) => {
+  const decodedToken = await verifyIdToken(req, res);
+  if (!decodedToken) return;
+
+  const { openaiApiKey } = req.body;
+  if (!openaiApiKey || typeof openaiApiKey !== "string") {
+    return res.status(400).json({ error: "openaiApiKey is required." });
+  }
+
+  try {
+    await admin.firestore().collection("users").doc(decodedToken.uid).set(
+      {
+        openaiApiKey,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+    res.json({ ok: true });
+  } catch (error) {
+    console.error("Failed to save OpenAI key:", error);
+    res.status(500).json({ error: "Unable to save OpenAI key." });
+  }
+});
+
+app.delete("/openai-key", async (req, res) => {
+  const decodedToken = await verifyIdToken(req, res);
+  if (!decodedToken) return;
+
+  try {
+    await admin.firestore().collection("users").doc(decodedToken.uid).update({
+      openaiApiKey: admin.firestore.FieldValue.delete(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    res.json({ ok: true });
+  } catch (error) {
+    console.error("Failed to delete OpenAI key:", error);
+    res.status(500).json({ error: "Unable to delete OpenAI key." });
+  }
+});
+
+// Health check endpoint
+app.get("/health", (req, res) => {
+  res.json({
+    status: "ok",
+    oauthConfigured: !!(
+      OAUTH_CONFIG.clientId && OAUTH_CONFIG.clientSecret
+    ),
+    firebaseAdmin:
+      firebaseAdminInitialized && admin.apps.length > 0,
+  });
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+  if (!OAUTH_CONFIG.clientId || !OAUTH_CONFIG.clientSecret) {
+    console.warn(
+      "⚠️  Warning: OAuth not configured. Set OPENAI_CLIENT_ID and OPENAI_CLIENT_SECRET to enable OAuth login."
+    );
+  } else {
+    console.log("✅ OAuth is configured and available");
+  }
+});
