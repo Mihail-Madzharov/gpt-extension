@@ -37,6 +37,10 @@ const OAUTH_CONFIG = {
   redirectUri: process.env.OPENAI_REDIRECT_URI || "https://gpt-extension.onrender.com/oauth/callback",
 };
 
+const GOOGLE_OAUTH_CLIENT_ID =
+  process.env.GOOGLE_OAUTH_CLIENT_ID ||
+  "169950079174-j1ai4pdp22dem45484iuve3tn6gokpot.apps.googleusercontent.com";
+
 // OAuth Authorization Endpoint
 app.get("/oauth/authorize", (req, res) => {
   try {
@@ -180,7 +184,7 @@ function getIdTokenFromRequest(req) {
   return match ? match[1] : null;
 }
 
-async function verifyIdToken(req, res) {
+async function verifyGoogleIdToken(req, res) {
   if (!firebaseAdminInitialized) {
     res.status(500).json({ error: "Firebase Admin is not initialized." });
     return null;
@@ -193,7 +197,33 @@ async function verifyIdToken(req, res) {
   }
 
   try {
-    return await admin.auth().verifyIdToken(idToken);
+    const tokenInfoResponse = await fetch(
+      `https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(idToken)}`
+    );
+
+    if (!tokenInfoResponse.ok) {
+      throw new Error("Google token verification failed");
+    }
+
+    const tokenInfo = await tokenInfoResponse.json();
+
+    if (tokenInfo.aud !== GOOGLE_OAUTH_CLIENT_ID) {
+      throw new Error("Token audience mismatch");
+    }
+
+    if (
+      tokenInfo.iss !== "accounts.google.com" &&
+      tokenInfo.iss !== "https://accounts.google.com"
+    ) {
+      throw new Error("Invalid token issuer");
+    }
+
+    return {
+      uid: tokenInfo.sub,
+      email: tokenInfo.email,
+      name: tokenInfo.name,
+      picture: tokenInfo.picture,
+    };
   } catch (error) {
     console.error("Failed to verify ID token:", error);
     res.status(401).json({ error: "Invalid authorization token." });
@@ -209,7 +239,9 @@ app.post("/verify-google-token", async (req, res) => {
   }
 
   try {
-    const decodedToken = await admin.auth().verifyIdToken(idToken);
+    const decodedToken = await verifyGoogleIdToken(req, res);
+    if (!decodedToken) return;
+
     const uid = decodedToken.uid;
     const email = decodedToken.email;
 
@@ -231,7 +263,7 @@ app.post("/verify-google-token", async (req, res) => {
 });
 
 app.get("/openai-key", async (req, res) => {
-  const decodedToken = await verifyIdToken(req, res);
+  const decodedToken = await verifyGoogleIdToken(req, res);
   if (!decodedToken) return;
 
   try {
@@ -245,7 +277,7 @@ app.get("/openai-key", async (req, res) => {
 });
 
 app.post("/openai-key", async (req, res) => {
-  const decodedToken = await verifyIdToken(req, res);
+  const decodedToken = await verifyGoogleIdToken(req, res);
   if (!decodedToken) return;
 
   const { openaiApiKey } = req.body;
@@ -269,7 +301,7 @@ app.post("/openai-key", async (req, res) => {
 });
 
 app.delete("/openai-key", async (req, res) => {
-  const decodedToken = await verifyIdToken(req, res);
+  const decodedToken = await verifyGoogleIdToken(req, res);
   if (!decodedToken) return;
 
   try {

@@ -76,7 +76,7 @@ googleLoginBtn.addEventListener("click", async () => {
 
     // Extract the ID token from the redirect URL
     const url = new URL(redirectUrl);
-    const token = url.hash.split("id_token=")[1];
+    const token = new URLSearchParams(url.hash.slice(1)).get("id_token");
 
     if (!token) {
       throw new Error("No ID token received from Google");
