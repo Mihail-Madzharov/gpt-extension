@@ -16,6 +16,8 @@ const firebaseAuthStatusEl = document.getElementById("firebase-auth-status");
 const googleLoginBtn = document.getElementById("google-login");
 const googleLogoutBtn = document.getElementById("google-logout");
 const openaiLoginBtn = document.getElementById("openai-login");
+const openaiOAuthSectionEl = document.getElementById("openai-oauth-section");
+const openaiOAuthDividerEl = document.getElementById("openai-oauth-divider");
 
 let currentUser = null;
 let idToken = null;
@@ -28,6 +30,12 @@ const tabContents = document.querySelectorAll(".tab-content");
 const BACKEND_URL = "https://gpt-extension.onrender.com";
 const GOOGLE_CLIENT_ID = "169950079174-j1ai4pdp22dem45484iuve3tn6gokpot.apps.googleusercontent.com";
 const REDIRECT_URL = chrome.identity.getRedirectURL();
+
+function generateOAuthState() {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
 
 // Initialize on startup
 document.addEventListener("DOMContentLoaded", () => {
@@ -55,11 +63,15 @@ function updateFirebaseAuthStatus() {
     firebaseAuthStatusEl.className = "auth-status authenticated";
     googleLoginBtn.style.display = "none";
     googleLogoutBtn.style.display = "inline-flex";
+    openaiOAuthSectionEl.style.display = "flex";
+    openaiOAuthDividerEl.style.display = "block";
   } else {
     firebaseAuthStatusEl.textContent = "Not signed in";
     firebaseAuthStatusEl.className = "auth-status unauthenticated";
     googleLoginBtn.style.display = "inline-flex";
     googleLogoutBtn.style.display = "none";
+    openaiOAuthSectionEl.style.display = "none";
+    openaiOAuthDividerEl.style.display = "none";
   }
 }
 
@@ -149,8 +161,16 @@ async function loginWithOpenAI() {
   openaiLoginBtn.textContent = "Opening OpenAI login...";
 
   try {
+    const health = await backendRequest("/health", { method: "GET" });
+    if (!health.oauthConfigured) {
+      throw new Error(
+        "Backend OAuth is not configured. Set OPENAI_CLIENT_ID and OPENAI_CLIENT_SECRET on Render."
+      );
+    }
+
     const redirectUri = chrome.identity.getRedirectURL("openai");
-    const authUrl = `${BACKEND_URL}/oauth/authorize?redirect_uri=${encodeURIComponent(redirectUri)}`;
+    const state = generateOAuthState();
+    const authUrl = `${BACKEND_URL}/oauth/authorize?redirect_uri=${encodeURIComponent(redirectUri)}&state=${encodeURIComponent(state)}`;
 
     const finalRedirectUrl = await chrome.identity.launchWebAuthFlow({
       url: authUrl,
@@ -160,6 +180,7 @@ async function loginWithOpenAI() {
     const callbackUrl = new URL(finalRedirectUrl);
     const code = callbackUrl.searchParams.get("code");
     const oauthError = callbackUrl.searchParams.get("error");
+    const returnedState = callbackUrl.searchParams.get("state");
 
     if (oauthError) {
       throw new Error(`OpenAI OAuth error: ${oauthError}`);
@@ -167,6 +188,10 @@ async function loginWithOpenAI() {
 
     if (!code) {
       throw new Error("No OAuth code received from OpenAI.");
+    }
+
+    if (!returnedState || returnedState !== state) {
+      throw new Error("Invalid OAuth state. Please retry login.");
     }
 
     const data = await backendRequest("/oauth/callback", {
@@ -183,11 +208,28 @@ async function loginWithOpenAI() {
       authMethod: "oauth",
     });
 
+    if (currentUser && idToken) {
+      await backendRequest("/openai-key", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${idToken}` },
+        body: JSON.stringify({ openaiApiKey: data.apiKey }),
+      });
+      await chrome.storage.sync.set({ authMethod: "oauth+firebase" });
+    }
+
     apiKeyInput.value = data.apiKey;
     showKeyStatus("✅ OpenAI login successful. Credential saved.", "success");
     updateAuthStatus();
   } catch (error) {
-    showKeyStatus(`OpenAI login failed: ${error.message}`, "error");
+    const message = String(error?.message || error);
+    if (message.includes("Authorization page could not be loaded")) {
+      showKeyStatus(
+        "OpenAI login failed: backend OAuth is not configured or redirect URI is not allowed.",
+        "error"
+      );
+    } else {
+      showKeyStatus(`OpenAI login failed: ${message}`, "error");
+    }
     console.error("OpenAI OAuth error:", error);
   } finally {
     openaiLoginBtn.disabled = false;
@@ -311,6 +353,8 @@ async function updateAuthStatus() {
     if (data.openaiApiKey) {
       const method = data.authMethod === "firebase"
         ? "Firebase"
+        : data.authMethod === "oauth+firebase"
+          ? "OpenAI OAuth + Firebase"
         : data.authMethod === "oauth"
           ? "OpenAI OAuth"
           : "Manual API Key";

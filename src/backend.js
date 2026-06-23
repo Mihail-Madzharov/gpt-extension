@@ -78,6 +78,7 @@ const GOOGLE_OAUTH_CLIENT_ID =
 app.get("/oauth/authorize", (req, res) => {
   try {
     const requestedRedirectUri = req.query.redirect_uri;
+    const state = typeof req.query.state === "string" ? req.query.state : "";
     const redirectUri = encodeURIComponent(requestedRedirectUri || OAUTH_CONFIG.redirectUri);
     const clientId = OAUTH_CONFIG.clientId;
     
@@ -87,7 +88,8 @@ app.get("/oauth/authorize", (req, res) => {
       });
     }
 
-    const authUrl = `https://platform.openai.com/oauth/authorize?client_id=${clientId}&redirect_uri=${redirectUri}&response_type=code&scope=offline_access`;
+    const encodedState = encodeURIComponent(state);
+    const authUrl = `https://platform.openai.com/oauth/authorize?client_id=${clientId}&redirect_uri=${redirectUri}&response_type=code&scope=offline_access${state ? `&state=${encodedState}` : ""}`;
     res.redirect(authUrl);
   } catch (error) {
     console.error("OAuth authorize error:", error);
