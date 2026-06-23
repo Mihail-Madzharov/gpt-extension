@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "AI Page Assistant",
+  "version": "0.1.0",
+  "permissions": ["sidePanel", "activeTab", "tabs", "scripting"],
+  "host_permissions": ["<all_urls>"],
+  "action": {
+    "default_title": "AI Assistant"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "background": {
+    "service_worker": "background.js"
+  }
+}
