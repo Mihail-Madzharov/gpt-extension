@@ -216,6 +216,28 @@
         color: var(--vscode-descriptionForeground, #cccccc);
       }
 
+      .journey-step-target--url {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+
+      .journey-url-link {
+        display: inline-block;
+        max-width: 100%;
+        padding: 6px 8px;
+        border: 1px solid var(--vscode-panel-border, #3e3e42);
+        border-radius: 4px;
+        background: var(--vscode-editor-background, #1e1e1e);
+        color: var(--vscode-textLink-foreground, #569cd6);
+        text-decoration: underline;
+        font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
+        font-size: 12px;
+        line-height: 1.4;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+      }
+
       .journey-step-buttons {
         display: flex;
         gap: 8px;

@@ -251,10 +251,6 @@ async function highlightTargetOnActiveTab(cssSelector) {
     throw new Error("CSS selector is required.");
   }
 
-  if (/:nth-child|:nth-of-type|:contains|:has\(|:text\(/i.test(normalizedCssSelector)) {
-    throw new Error("Selector must not use nth-child or text-based pseudo selectors.");
-  }
-
   const [tab] = await chrome.tabs.query({
     active: true,
     currentWindow: true,
@@ -272,40 +268,140 @@ async function highlightTargetOnActiveTab(cssSelector) {
           .toLowerCase()
           .replace(/\s+/g, " ")
           .trim();
+
+      const escapeCssValue = (value) => {
+        const raw = String(value || "");
+        if (window.CSS && typeof window.CSS.escape === "function") {
+          return window.CSS.escape(raw);
+        }
+        return raw.replace(/[^a-zA-Z0-9_-]/g, "\\$&");
+      };
+
       const isVisible = (el) => {
         const style = window.getComputedStyle(el);
         if (style.display === "none" || style.visibility === "hidden") return false;
         if (Number(style.opacity) === 0) return false;
         const rect = el.getBoundingClientRect();
-        return rect.width >= 4 && rect.height >= 4;
+        return rect.width > 0 && rect.height > 0;
       };
+
+      const buildSelectorAlternatives = (selector) => {
+        const alternatives = new Set([selector]);
+
+        // querySelector does not support jQuery-like text pseudos; retry without them.
+        const withoutTextPseudos = String(selector || "")
+          .replace(/:contains\([^)]*\)/gi, "")
+          .replace(/:text\([^)]*\)/gi, "")
+          .replace(/\s+/g, " ")
+          .trim();
+        if (withoutTextPseudos && withoutTextPseudos !== selector) {
+          alternatives.add(withoutTextPseudos);
+        }
+
+        const hrefMatch = selector.match(/\[href\s*=\s*['\"]([^'\"]+)['\"]\]/i);
+
+        if (hrefMatch) {
+          const hrefValue = String(hrefMatch[1] || "").trim();
+
+          if (hrefValue.startsWith("/")) {
+            try {
+              const absoluteHref = new URL(hrefValue, location.origin).href;
+              alternatives.add(
+                selector.replace(hrefMatch[0], `[href='${absoluteHref}']`),
+              );
+            } catch {
+              // Ignore malformed URL and keep base selector only.
+            }
+
+            alternatives.add(
+              selector.replace(hrefMatch[0], `[href$='${hrefValue}']`),
+            );
+          }
+        }
+
+        const idMatch = selector.match(/#([A-Za-z0-9_-]+)/);
+        if (idMatch) {
+          const elementId = idMatch[1];
+          alternatives.add(`#${elementId}`);
+          alternatives.add(`label[for='${elementId}']`);
+          alternatives.add(`#${elementId} + span a`);
+          alternatives.add(`#${elementId} ~ span a`);
+        }
+
+        return Array.from(alternatives);
+      };
+
+      const findHighlightableElement = (el) => {
+        if (!el) return null;
+        if (isVisible(el)) return el;
+
+        if (el instanceof HTMLInputElement && el.id) {
+          const forLabel = document.querySelector(`label[for='${escapeCssValue(el.id)}']`);
+          if (forLabel && isVisible(forLabel)) return forLabel;
+        }
+
+        const childLink = el.querySelector?.("a, button, [role='button']");
+        if (childLink && isVisible(childLink)) return childLink;
+
+        let parent = el.parentElement;
+        let safety = 0;
+        while (parent && safety < 5) {
+          if (isVisible(parent)) return parent;
+          parent = parent.parentElement;
+          safety += 1;
+        }
+
+        return null;
+      };
+
       try {
-        const directBySelector = document.querySelector(cssSelector);
-        if (!directBySelector || !isVisible(directBySelector)) {
+        const selectorAlternatives = buildSelectorAlternatives(cssSelector);
+        let matchedSelector = "";
+        let directBySelector = null;
+
+        for (const alternative of selectorAlternatives) {
+          const candidate = document.querySelector(alternative);
+          if (candidate) {
+            directBySelector = candidate;
+            matchedSelector = alternative;
+            if (isVisible(candidate)) break;
+          }
+        }
+
+        const highlightTarget = findHighlightableElement(directBySelector);
+
+        if (!directBySelector || !highlightTarget) {
+          const selectorHint = selectorAlternatives
+            .filter((value) => value !== cssSelector)
+            .slice(0, 3)
+            .join(" or ");
+
           return {
             ok: false,
-            error: `Could not find a visible page element for selector \"${cssSelector}\"`,
+            error: selectorHint
+              ? `Could not find a visible page element for selector \"${cssSelector}\". Try selector ${selectorHint}.`
+              : `Could not find a visible page element for selector \"${cssSelector}\".`,
           };
         }
 
         const selectorText = normalize(
-          directBySelector.innerText ||
-            directBySelector.textContent ||
-            directBySelector.getAttribute("aria-label") ||
-            directBySelector.getAttribute("title") ||
-            directBySelector.id,
+          highlightTarget.innerText ||
+            highlightTarget.textContent ||
+            highlightTarget.getAttribute("aria-label") ||
+            highlightTarget.getAttribute("title") ||
+            highlightTarget.id,
         );
 
         const existing = document.getElementById("gpt-assistant-highlight");
         if (existing) existing.remove();
 
-        directBySelector.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
-        directBySelector.style.outline = "3px solid #10a37f";
-        directBySelector.style.outlineOffset = "2px";
+        highlightTarget.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
+        highlightTarget.style.outline = "3px solid #10a37f";
+        highlightTarget.style.outlineOffset = "2px";
 
         const badge = document.createElement("div");
         badge.id = "gpt-assistant-highlight";
-        badge.textContent = `Next step selector: ${cssSelector}`;
+        badge.textContent = `Next step selector: ${matchedSelector || cssSelector}`;
         badge.style.position = "fixed";
         badge.style.zIndex = "2147483647";
         badge.style.right = "16px";
@@ -320,8 +416,8 @@ async function highlightTargetOnActiveTab(cssSelector) {
         document.body.appendChild(badge);
 
         setTimeout(() => {
-          directBySelector.style.outline = "";
-          directBySelector.style.outlineOffset = "";
+          highlightTarget.style.outline = "";
+          highlightTarget.style.outlineOffset = "";
           const marker = document.getElementById("gpt-assistant-highlight");
           if (marker) marker.remove();
         }, 3500);

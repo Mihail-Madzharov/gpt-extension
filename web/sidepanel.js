@@ -474,6 +474,7 @@ function normalizeJourney(aiResult) {
 
   return {
     summary: String(journey.summary || "Follow these steps on the page."),
+    currentUrl: String(journey.currentUrl || ""),
     steps: journey.steps.map((step, index) => ({
       title: String(step?.title || `Step ${index + 1}`),
       action: String(step?.action || "Continue"),
@@ -482,6 +483,33 @@ function normalizeJourney(aiResult) {
       reason: String(step?.reason || ""),
     })),
   };
+}
+
+function extractHrefFromSelector(selectorText) {
+  const selector = String(selectorText || "").trim();
+  if (!selector) return "";
+
+  const hrefMatch = selector.match(/\[href\s*=\s*['\"]([^'\"]+)['\"]\]/i);
+  return hrefMatch ? String(hrefMatch[1] || "").trim() : "";
+}
+
+function resolveStepNavigationUrl(step) {
+  const explicitUrl = String(step?.navigateUrl || "").trim();
+  if (explicitUrl) return explicitUrl;
+
+  const hrefFromSelector = extractHrefFromSelector(step?.cssSelector);
+  if (!hrefFromSelector) return "";
+
+  const baseUrl =
+    String(activeJourney?.currentUrl || "").trim() ||
+    window.location.href ||
+    "";
+
+  try {
+    return normalizeNavigationUrl(hrefFromSelector, baseUrl);
+  } catch {
+    return hrefFromSelector;
+  }
 }
 
 function detectSelectorFromRawMessage(message) {
@@ -590,9 +618,7 @@ async function runJourneyStep(stepIndex) {
 
   // Check if navigation is required but not done yet
   if (step.navigateUrl) {
-    throw new Error(
-      `This step requires navigating to another page. Click "Open Required Page" to navigate.`
-    );
+    return;
   }
 
   // Only highlight the target on the current page
@@ -615,6 +641,7 @@ function renderActiveJourney() {
   }
 
   const step = activeJourney.steps[activeStepIndex];
+  const effectiveNavigateUrl = resolveStepNavigationUrl(step);
   const isFirst = activeStepIndex === 0;
   const isLast = activeStepIndex === activeJourney.steps.length - 1;
 
@@ -629,11 +656,10 @@ function renderActiveJourney() {
     <div class="journey-step">
       <div class="journey-step-title">${activeStepIndex + 1}. ${escapeHtml(step.title)}</div>
       <div class="journey-step-action">${escapeHtml(step.action)}</div>
-      ${step.navigateUrl ? `<div class="journey-step-target">Navigate to: <a href="${escapeHtml(step.navigateUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(step.navigateUrl)}</a></div>` : ""}
-      ${step.cssSelector ? `<div class="journey-step-target">Selector: <strong>${escapeHtml(step.cssSelector)}</strong></div>` : ""}
+      ${effectiveNavigateUrl ? `<div class="journey-step-target journey-step-target--url">Navigate to: <a class="journey-url-link" href="${escapeHtml(effectiveNavigateUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(effectiveNavigateUrl)}</a></div>` : ""}
       ${step.reason ? `<div class="help-text">${escapeHtml(step.reason)}</div>` : ""}
       <div class="journey-step-buttons">
-        ${step.navigateUrl ? `<button id="journey-nav-only" class="btn-secondary">Open Required Page</button>` : ""}
+        ${effectiveNavigateUrl ? `<button id="journey-nav-only" class="btn-secondary" data-url="${escapeHtml(effectiveNavigateUrl)}">Open Required Page</button>` : ""}
         ${step.cssSelector ? `<button id="journey-highlight-only" class="btn-secondary">Take Me to Target</button>` : ""}
       </div>
     </div>
@@ -736,11 +762,11 @@ resultEl.addEventListener("click", async (event) => {
   }
 
   if (target.id === "journey-nav-only") {
-    const step = activeJourney?.steps?.[activeStepIndex];
-    if (!step?.navigateUrl) return;
+    const url = target.dataset.url || "";
+    if (!url) return;
 
     try {
-      await navigateToJourneyUrl(step.navigateUrl);
+      await navigateToJourneyUrl(url);
     } catch (error) {
       resultEl.insertAdjacentHTML(
         "afterbegin",
