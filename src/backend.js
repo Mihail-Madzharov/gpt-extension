@@ -653,24 +653,6 @@ ${elementsText}
       return content;
     };
 
-    const buildInputContent = (promptText) => {
-      const content = [
-        {
-          type: "input_text",
-          text: promptText,
-        },
-      ];
-
-      if (screenshot) {
-        content.push({
-          type: "input_image",
-          image_url: screenshot,
-        });
-      }
-
-      return content;
-    };
-
     const response = await openai.responses.create({
       model: "gpt-4.1-mini",
       input: [
