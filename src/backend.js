@@ -9,7 +9,12 @@ const app = express();
 app.use(express.json({ limit: "25mb" }));
 
 const firebaseServiceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
-const firebaseServiceAccountPath = process.env.FIREBASE_SERVICE_ACCOUNT_PATH || path.resolve(process.cwd(), "gpt-embeded-firebase-adminsdk-fbsvc-6a91347930.json");
+const firebaseServiceAccountPath =
+  process.env.FIREBASE_SERVICE_ACCOUNT_PATH ||
+  path.resolve(
+    process.cwd(),
+    "gpt-embeded-firebase-adminsdk-fbsvc-6a91347930.json",
+  );
 const firebaseProjectId = process.env.FIREBASE_PROJECT_ID || "gpt-embeded";
 let firebaseAdminInitialized = false;
 let db = null;
@@ -24,7 +29,10 @@ try {
     let serviceAccount;
     let initSource;
 
-    console.log("FIREBASE_SERVICE_ACCOUNT_JSON env var set?", !!firebaseServiceAccountJson);
+    console.log(
+      "FIREBASE_SERVICE_ACCOUNT_JSON env var set?",
+      !!firebaseServiceAccountJson,
+    );
 
     // Try JSON environment variable first
     if (firebaseServiceAccountJson) {
@@ -33,14 +41,25 @@ try {
         serviceAccount = JSON.parse(firebaseServiceAccountJson);
         initSource = "FIREBASE_SERVICE_ACCOUNT_JSON environment variable";
         console.log(`✅ Successfully parsed Firebase credentials from env var`);
-        console.log(`  Project ID in credentials: ${serviceAccount.project_id}`);
+        console.log(
+          `  Project ID in credentials: ${serviceAccount.project_id}`,
+        );
       } catch (parseError) {
-        console.error("❌ Failed to parse FIREBASE_SERVICE_ACCOUNT_JSON:", parseError.message);
-        throw new Error(`Invalid JSON in FIREBASE_SERVICE_ACCOUNT_JSON: ${parseError.message}`);
+        console.error(
+          "❌ Failed to parse FIREBASE_SERVICE_ACCOUNT_JSON:",
+          parseError.message,
+        );
+        throw new Error(
+          `Invalid JSON in FIREBASE_SERVICE_ACCOUNT_JSON: ${parseError.message}`,
+        );
       }
     } else {
-      console.log(`Attempting to read credentials from file: ${firebaseServiceAccountPath}`);
-      serviceAccount = JSON.parse(fs.readFileSync(firebaseServiceAccountPath, "utf8"));
+      console.log(
+        `Attempting to read credentials from file: ${firebaseServiceAccountPath}`,
+      );
+      serviceAccount = JSON.parse(
+        fs.readFileSync(firebaseServiceAccountPath, "utf8"),
+      );
       initSource = `file path: ${firebaseServiceAccountPath}`;
       console.log(`✅ Successfully read Firebase credentials from file`);
       console.log(`  Project ID in credentials: ${serviceAccount.project_id}`);
@@ -57,17 +76,21 @@ try {
   }
 } catch (error) {
   console.error(
-    `❌ Firebase Admin could not initialize from credentials: ${error.message}`
+    `❌ Firebase Admin could not initialize from credentials: ${error.message}`,
   );
   console.error("Full error:", error);
-  console.warn("⚠️  Firebase Admin will not be available. Credentials must be set.");
+  console.warn(
+    "⚠️  Firebase Admin will not be available. Credentials must be set.",
+  );
 }
 
 // OAuth Configuration
 const OAUTH_CONFIG = {
   clientId: process.env.OPENAI_CLIENT_ID,
   clientSecret: process.env.OPENAI_CLIENT_SECRET,
-  redirectUri: process.env.OPENAI_REDIRECT_URI || "https://gpt-extension.onrender.com/oauth/callback",
+  redirectUri:
+    process.env.OPENAI_REDIRECT_URI ||
+    "https://gpt-extension.onrender.com/oauth/callback",
 };
 
 const GOOGLE_OAUTH_CLIENT_ID =
@@ -79,9 +102,11 @@ app.get("/oauth/authorize", (req, res) => {
   try {
     const requestedRedirectUri = req.query.redirect_uri;
     const state = typeof req.query.state === "string" ? req.query.state : "";
-    const redirectUri = encodeURIComponent(requestedRedirectUri || OAUTH_CONFIG.redirectUri);
+    const redirectUri = encodeURIComponent(
+      requestedRedirectUri || OAUTH_CONFIG.redirectUri,
+    );
     const clientId = OAUTH_CONFIG.clientId;
-    
+
     if (!clientId) {
       return res.status(500).json({
         error: "OAuth not configured on backend",
@@ -134,7 +159,7 @@ app.post("/oauth/callback", async (req, res) => {
     if (!tokenResponse.ok) {
       const errorData = await tokenResponse.json();
       throw new Error(
-        errorData.error_description || "Failed to exchange code for token"
+        errorData.error_description || "Failed to exchange code for token",
       );
     }
 
@@ -168,14 +193,15 @@ app.post("/oauth/callback", async (req, res) => {
 
 // AI Task Endpoint
 app.post("/ai-task", async (req, res) => {
-  const { url, title, pageContext, task, apiKey } = req.body;
+  const { url, title, pageContext, task, apiKey, screenshot } = req.body;
 
   // Use the provided API key or fall back to environment variable
   const key = apiKey || process.env.OPENAI_API_KEY;
-  
+
   if (!key) {
     return res.status(400).json({
-      error: "No API key provided. Please configure your OpenAI API key in the extension settings.",
+      error:
+        "No API key provided. Please configure your OpenAI API key in the extension settings.",
     });
   }
 
@@ -192,8 +218,10 @@ app.post("/ai-task", async (req, res) => {
         return "(no elements found)";
       }
       return elements
-        .map((el) => `- <${el.tag}> "${el.text || "(no label)"}" (selector: ${el.selector})`)
-        .slice(0, 50)
+        .map((el) => {
+          return `- <${el.tag}> "${el.text || "(no label)"}" selector="${el.selector || ""}" href="${el.href || ""}" value="${el.value || ""}"`;
+        })
+        .slice(0, 250)
         .join("\n");
     };
     const elementsText = formatElementsList(pageContext?.elements);
@@ -250,7 +278,9 @@ app.post("/ai-task", async (req, res) => {
 
     if (isHtmlExtractionTask) {
       const shouldReplyInBulgarian = /[\u0400-\u04FF]/.test(taskText);
-      const extractionLanguage = shouldReplyInBulgarian ? "Bulgarian" : "English";
+      const extractionLanguage = shouldReplyInBulgarian
+        ? "Bulgarian"
+        : "English";
 
       const extractionResponse = await openai.responses.create({
         model: "gpt-4.1-mini",
@@ -288,7 +318,9 @@ ${elementsText}
         ],
       });
 
-      const rawExtractionText = String(extractionResponse.output_text || "").trim();
+      const rawExtractionText = String(
+        extractionResponse.output_text || "",
+      ).trim();
       let extraction;
 
       try {
@@ -302,8 +334,12 @@ ${elementsText}
         };
       }
 
-      const found = Boolean(extraction?.found) && Boolean(String(extraction?.html || "").trim());
-      const target = String(extraction?.target || taskText || "requested element").trim();
+      const found =
+        Boolean(extraction?.found) &&
+        Boolean(String(extraction?.html || "").trim());
+      const target = String(
+        extraction?.target || taskText || "requested element",
+      ).trim();
       const extractedHtml = String(extraction?.html || "");
       const reason = String(extraction?.reason || "").trim();
 
@@ -439,43 +475,37 @@ You are a web navigation assistant.
 
 Return ONLY valid JSON with this exact schema:
 {
+  "found": true,
+  "confidence": 0,
   "summary": "short overview",
   "currentUrl": "${pageUrl}",
   "steps": [
     {
       "title": "short step title",
       "action": "what to do",
-      "cssSelector": "full CSS path to target element using id/class based selectors, or empty string",
-      "navigateUrl": "absolute url or empty string",
-      "reason": "optional short reason"
+      "cssSelector": "best selector for the element",
+      "journeySelector": "full CSS journey/path to the element",
+      "href": "href value if the element is a link, otherwise empty string",
+      "navigateUrl": "absolute URL to navigate to, otherwise empty string",
+      "reason": "why this element was selected"
     }
-  ]
+  ],
+  "reason": "short reason"
 }
 
 Rules:
-- Use the screenshot as the primary source of truth.
-- Use HTML only to obtain selectors, attributes, IDs, names, hrefs, and other DOM details.
-- Never claim an element exists unless it is visible in the screenshot or clearly identifiable from both screenshot and HTML.
-- Prefer unique selectors (id, data-testid, name) over positional selectors.
-- Avoid brittle selectors such as :nth-child() unless no stable alternative exists.
-- If multiple candidates exist, return the most specific and relevant one.
-- If confidence is below 80%, set found=false.
-- Ignore hidden, disabled, covered, or off-screen elements unless explicitly requested.
-- Match the user's intent semantically, not only by exact text.
-- When searching for buttons, links, inputs, checkboxes, radios, or menus, prioritize interactive elements.
-- If the requested element is inside a modal, dialog, dropdown, or popup, return the selector for the element inside that container.
-- If multiple matching elements are visible, choose the one closest to the user's described context.
-- Return only one best match.
-- Include a confidence score from 0 to 100.
-- Include a short reason describing why the element was selected.
-- If HTML and screenshot disagree, trust the screenshot.
-- If the target cannot be located with high confidence, set found=false.
-- If HTML is unavailable or the target cannot be identified, set found=false and explain why in reason.
-- Never invent selectors, text, attributes, or DOM structure.
+- Return one best matching target.
+- Use the available page elements as the source of truth.
+- Prefer elements with exact/semantic text match.
+- If the element has href, return it in href.
+- If href is relative, keep href as found and put the absolute URL in navigateUrl if possible.
+- cssSelector should be the best selector for clicking/querying the element.
+- journeySelector should describe the full path/journey to reach the element in the DOM.
+- If the target cannot be found, set found=false, confidence below 80, steps=[] and explain in reason.
+- Never invent selectors, hrefs, text, or URLs.
 - Output valid JSON only.
 - No markdown.
-- No explanations outside the JSON response.
-${strictSelectorMode ? "- CRITICAL: Regenerate all steps now so each non-navigation step has a non-empty full cssSelector path." : ""}
+${strictSelectorMode ? "- CRITICAL: every found step must include non-empty cssSelector and journeySelector." : ""}
 
 Current URL: ${pageUrl}
 Current Title: ${pageTitle}
@@ -530,22 +560,46 @@ ${elementsText}
         inputJourney && typeof inputJourney === "object"
           ? inputJourney
           : {
+              found: false,
+              confidence: 0,
               summary: "Follow these steps on the current page.",
               currentUrl: pageUrl,
               steps: [],
+              reason: "Invalid journey response.",
             };
 
-      const safeSteps = Array.isArray(safeJourney.steps) ? safeJourney.steps : [];
+      const safeSteps = Array.isArray(safeJourney.steps)
+        ? safeJourney.steps
+        : [];
 
       return {
-        ...safeJourney,
-        steps: safeSteps.map((step) => ({
-          title: String(step?.title || "Step"),
-          action: String(step?.action || "Continue"),
-          cssSelector: pickBestSelector(step),
-          navigateUrl: String(step?.navigateUrl || ""),
-          reason: String(step?.reason || ""),
-        })),
+        found: Boolean(safeJourney.found),
+        confidence: Number(safeJourney.confidence || 0),
+        summary: String(
+          safeJourney.summary || "Follow these steps on the current page.",
+        ),
+        currentUrl: String(safeJourney.currentUrl || pageUrl),
+        reason: String(safeJourney.reason || ""),
+
+        steps: safeSteps.map((step) => {
+          const cssSelector = pickBestSelector(step);
+
+          return {
+            title: String(step?.title || "Step"),
+            action: String(step?.action || "Continue"),
+            cssSelector,
+            journeySelector: String(
+              step?.journeySelector ||
+                step?.fullCssSelector ||
+                step?.cssPath ||
+                cssSelector ||
+                "",
+            ),
+            href: String(step?.href || ""),
+            navigateUrl: String(step?.navigateUrl || ""),
+            reason: String(step?.reason || ""),
+          };
+        }),
       };
     };
 
@@ -569,26 +623,60 @@ ${elementsText}
     };
 
     const hasStepWithoutRequiredSelector = (normalizedJourney) =>
-      normalizedJourney.steps.some(
-        (step) => {
-          if (step.navigateUrl) return false;
-          const existsInExtractedContext =
-            extractedSelectorSet.size === 0 ||
-            extractedSelectorSet.has(step.cssSelector);
+      normalizedJourney.steps.some((step) => {
+        if (step.navigateUrl) return false;
+        const existsInExtractedContext =
+          extractedSelectorSet.size === 0 ||
+          extractedSelectorSet.has(step.cssSelector);
 
-          return (
-            !isValidIdClassPathSelector(step.cssSelector) ||
-            !existsInExtractedContext
-          );
+        return (
+          !isValidIdClassPathSelector(step.cssSelector) ||
+          !existsInExtractedContext
+        );
+      });
+
+    const buildInputContent = (promptText) => {
+      const content = [
+        {
+          type: "input_text",
+          text: promptText,
         },
-      );
+      ];
+
+      if (screenshot) {
+        content.push({
+          type: "input_image",
+          image_url: screenshot,
+        });
+      }
+
+      return content;
+    };
+
+    const buildInputContent = (promptText) => {
+      const content = [
+        {
+          type: "input_text",
+          text: promptText,
+        },
+      ];
+
+      if (screenshot) {
+        content.push({
+          type: "input_image",
+          image_url: screenshot,
+        });
+      }
+
+      return content;
+    };
 
     const response = await openai.responses.create({
       model: "gpt-4.1-mini",
       input: [
         {
           role: "user",
-          content: buildNavigationPrompt(),
+          content: buildInputContent(buildNavigationPrompt()),
         },
       ],
     });
@@ -643,7 +731,7 @@ async function verifyGoogleIdToken(req, res) {
 
   try {
     const tokenInfoResponse = await fetch(
-      `https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(idToken)}`
+      `https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(idToken)}`,
     );
 
     if (!tokenInfoResponse.ok) {
@@ -698,7 +786,7 @@ app.post("/verify-google-token", async (req, res) => {
         createdAt: FieldValue.serverTimestamp(),
         lastSignIn: FieldValue.serverTimestamp(),
       },
-      { merge: true }
+      { merge: true },
     );
 
     res.json({ uid, email });
@@ -737,7 +825,7 @@ app.post("/openai-key", async (req, res) => {
         openaiApiKey,
         updatedAt: FieldValue.serverTimestamp(),
       },
-      { merge: true }
+      { merge: true },
     );
     res.json({ ok: true });
   } catch (error) {
@@ -766,11 +854,8 @@ app.delete("/openai-key", async (req, res) => {
 app.get("/health", (req, res) => {
   res.json({
     status: "ok",
-    oauthConfigured: !!(
-      OAUTH_CONFIG.clientId && OAUTH_CONFIG.clientSecret
-    ),
-    firebaseAdmin:
-      firebaseAdminInitialized && getApps().length > 0,
+    oauthConfigured: !!(OAUTH_CONFIG.clientId && OAUTH_CONFIG.clientSecret),
+    firebaseAdmin: firebaseAdminInitialized && getApps().length > 0,
     firebaseProjectId: firebaseProjectId,
   });
 });
@@ -780,7 +865,7 @@ app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
   if (!OAUTH_CONFIG.clientId || !OAUTH_CONFIG.clientSecret) {
     console.warn(
-      "⚠️  Warning: OAuth not configured. Set OPENAI_CLIENT_ID and OPENAI_CLIENT_SECRET to enable OAuth login."
+      "⚠️  Warning: OAuth not configured. Set OPENAI_CLIENT_ID and OPENAI_CLIENT_SECRET to enable OAuth login.",
     );
   } else {
     console.log("✅ OAuth is configured and available");

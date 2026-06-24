@@ -14,7 +14,7 @@ const OAUTH_CONFIG = {
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "START_OAUTH_FLOW") {
-    handleOAuthFlow(sender.tab.windowId)
+    handleOAuthFlow(sender.tab?.windowId)
       .then(sendResponse)
       .catch((error) => {
         console.error(error);
@@ -63,10 +63,33 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 });
 
+async function getActiveTab(preferredWindowId) {
+  if (Number.isInteger(preferredWindowId)) {
+    const inPreferredWindow = await chrome.tabs.query({
+      active: true,
+      windowId: preferredWindowId,
+    });
+    if (inPreferredWindow[0]?.id) {
+      return inPreferredWindow[0];
+    }
+  }
+
+  const inLastFocusedWindow = await chrome.tabs.query({
+    active: true,
+    lastFocusedWindow: true,
+  });
+  if (inLastFocusedWindow[0]?.id) {
+    return inLastFocusedWindow[0];
+  }
+
+  const anyActiveTab = await chrome.tabs.query({ active: true });
+  return anyActiveTab[0] || null;
+}
+
 // Handle OAuth Flow
 async function handleOAuthFlow(windowId) {
   const authUrl = `${OAUTH_CONFIG.authUrl}?redirect_uri=${encodeURIComponent(OAUTH_CONFIG.redirectUri)}`;
-  
+
   try {
     // Open a popup window for OAuth
     const popup = await chrome.windows.create({
@@ -111,10 +134,7 @@ async function handleOAuthFlow(windowId) {
 }
 
 async function handleGetPageContext(task, apiKey) {
-  const [tab] = await chrome.tabs.query({
-    active: true,
-    currentWindow: true,
-  });
+  const tab = await getActiveTab();
 
   if (!tab?.id) {
     throw new Error("No active tab found");
@@ -128,7 +148,8 @@ async function handleGetPageContext(task, apiKey) {
   const screenshot = await chrome.tabs.captureVisibleTab(tab.windowId, {
     format: "png",
   });
-
+  console.log("Screenshot captured:", screenshot);
+  console.log("Page context:", pageContext);
   const aiResult = await fetch("https://gpt-extension.onrender.com/ai-task", {
     method: "POST",
     headers: {
@@ -158,95 +179,116 @@ async function handleGetPageContext(task, apiKey) {
     aiResult,
   };
 }
-
 function getPageContextFromDom() {
-  const escapeSelectorToken = (value) => {
-    const raw = String(value || "").trim();
-    if (!raw) return "";
-    if (window.CSS && typeof window.CSS.escape === "function") {
-      return window.CSS.escape(raw);
-    }
-    return raw.replace(/[^a-zA-Z0-9_-]/g, "\\$&");
-  };
+  const escape = (v) =>
+    CSS?.escape
+      ? CSS.escape(String(v))
+      : String(v).replace(/[^a-zA-Z0-9_-]/g, "\\$&");
 
-  const buildSelectorPath = (el) => {
+  const getSelector = (el) => {
     if (!(el instanceof Element)) return "";
 
-    if (el.id) {
-      return `#${escapeSelectorToken(el.id)}`;
-    }
+    if (el.id) return `#${escape(el.id)}`;
 
-    const segments = [];
+    const parts = [];
     let current = el;
-    let safety = 0;
 
-    while (current && current.nodeType === Node.ELEMENT_NODE && safety < 12) {
-      const tag = (current.tagName || "").toLowerCase();
-      if (!tag) break;
+    while (
+      current &&
+      current.nodeType === Node.ELEMENT_NODE &&
+      parts.length < 8
+    ) {
+      const tag = current.tagName.toLowerCase();
 
-      if (current.id) {
-        segments.unshift(`#${escapeSelectorToken(current.id)}`);
-        return segments.join(" > ");
+      let part = tag;
+
+      if (current.getAttribute("name")) {
+        part += `[name="${current.getAttribute("name").replace(/"/g, '\\"')}"]`;
+      } else if (current.getAttribute("aria-label")) {
+        part += `[aria-label="${current.getAttribute("aria-label").replace(/"/g, '\\"')}"]`;
+      } else {
+        const parent = current.parentElement;
+        if (parent) {
+          const sameTag = [...parent.children].filter(
+            (x) => x.tagName === current.tagName,
+          );
+          if (sameTag.length > 1) {
+            part += `:nth-of-type(${sameTag.indexOf(current) + 1})`;
+          }
+        }
       }
 
-      const classNames = String(current.className || "")
-        .split(/\s+/)
-        .map((name) => name.trim())
-        .filter(Boolean)
-        .slice(0, 2)
-        .map((name) => `.${escapeSelectorToken(name)}`)
-        .join("");
-
-      if (!classNames) {
-        return "";
-      }
-
-      segments.unshift(`${tag}${classNames}`);
+      parts.unshift(part);
       current = current.parentElement;
-      safety += 1;
     }
 
-    return segments.length >= 2 ? segments.join(" > ") : "";
+    return parts.join(" > ");
+  };
+
+  const getLabelText = (el) => {
+    if (el.id) {
+      const label = document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
+      if (label?.innerText) return label.innerText;
+    }
+
+    const wrappedLabel = el.closest("label");
+    if (wrappedLabel?.innerText) return wrappedLabel.innerText;
+
+    return "";
+  };
+
+  const getElementText = (el) => {
+    return (
+      getLabelText(el) ||
+      el.innerText ||
+      el.textContent ||
+      el.placeholder ||
+      el.getAttribute("aria-label") ||
+      el.getAttribute("title") ||
+      el.getAttribute("name") ||
+      el.getAttribute("value") ||
+      ""
+    ).trim();
   };
 
   const elements = [
-    ...document.querySelectorAll("button, a, input, textarea, select"),
-  ]
-    .map((el) => {
-      const cssSelector = buildSelectorPath(el);
-      if (!cssSelector) return null;
-
-      let displayText = "";
-      if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") {
-        const label = document.querySelector(`label[for='${el.id}']`);
-        displayText =
-          label?.textContent ||
-          el.placeholder ||
-          el.getAttribute("aria-label") ||
-          el.getAttribute("title") ||
-          el.getAttribute("name") ||
-          "";
-      } else {
-        displayText =
-          el.innerText ||
-          el.textContent ||
-          el.getAttribute("aria-label") ||
-          el.getAttribute("title") ||
-          "";
-      }
-
-      return {
-        tag: el.tagName.toLowerCase(),
-        text: displayText.slice(0, 100).trim(),
-        selector: cssSelector,
-      };
-    })
-    .filter(Boolean)
-    .slice(0, 250);
+    ...document.querySelectorAll(`
+      button,
+      a,
+      input,
+      textarea,
+      select,
+      option,
+      [role="button"],
+      [role="link"],
+      [role="checkbox"],
+      [role="radio"],
+      [role="textbox"],
+      [tabindex],
+      [contenteditable="true"]
+    `),
+  ].map((el) => ({
+    tag: el.tagName.toLowerCase(),
+    type: el.getAttribute("type") || "",
+    role: el.getAttribute("role") || "",
+    text: getElementText(el).slice(0, 200),
+    value: "value" in el ? el.value : "",
+    checked: "checked" in el ? el.checked : undefined,
+    selected: "selected" in el ? el.selected : undefined,
+    href: el.href || "",
+    disabled: el.disabled || el.getAttribute("aria-disabled") === "true",
+    visible: !!(
+      el.offsetWidth ||
+      el.offsetHeight ||
+      el.getClientRects().length
+    ),
+    selector: getSelector(el),
+  }));
 
   return {
     url: location.href,
     title: document.title,
+    bodyText: document.body.innerText.slice(0, 15000),
     elements,
   };
 }
@@ -258,10 +300,7 @@ async function highlightTargetOnActiveTab(cssSelector) {
     throw new Error("CSS selector is required.");
   }
 
-  const [tab] = await chrome.tabs.query({
-    active: true,
-    currentWindow: true,
-  });
+  const tab = await getActiveTab();
 
   if (!tab?.id) {
     throw new Error("No active tab found.");
@@ -286,7 +325,8 @@ async function highlightTargetOnActiveTab(cssSelector) {
 
       const isVisible = (el) => {
         const style = window.getComputedStyle(el);
-        if (style.display === "none" || style.visibility === "hidden") return false;
+        if (style.display === "none" || style.visibility === "hidden")
+          return false;
         if (Number(style.opacity) === 0) return false;
         const rect = el.getBoundingClientRect();
         return rect.width > 0 && rect.height > 0;
@@ -343,7 +383,9 @@ async function highlightTargetOnActiveTab(cssSelector) {
         if (isVisible(el)) return el;
 
         if (el instanceof HTMLInputElement && el.id) {
-          const forLabel = document.querySelector(`label[for='${escapeCssValue(el.id)}']`);
+          const forLabel = document.querySelector(
+            `label[for='${escapeCssValue(el.id)}']`,
+          );
           if (forLabel && isVisible(forLabel)) return forLabel;
         }
 
@@ -402,7 +444,11 @@ async function highlightTargetOnActiveTab(cssSelector) {
         const existing = document.getElementById("gpt-assistant-highlight");
         if (existing) existing.remove();
 
-        highlightTarget.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
+        highlightTarget.scrollIntoView({
+          behavior: "smooth",
+          block: "center",
+          inline: "center",
+        });
         highlightTarget.style.outline = "3px solid #10a37f";
         highlightTarget.style.outlineOffset = "2px";
 
@@ -417,7 +463,8 @@ async function highlightTargetOnActiveTab(cssSelector) {
         badge.style.borderRadius = "8px";
         badge.style.background = "#10a37f";
         badge.style.color = "white";
-        badge.style.fontFamily = "system-ui, -apple-system, Segoe UI, Roboto, sans-serif";
+        badge.style.fontFamily =
+          "system-ui, -apple-system, Segoe UI, Roboto, sans-serif";
         badge.style.fontSize = "12px";
         badge.style.boxShadow = "0 8px 24px rgba(0,0,0,0.25)";
         document.body.appendChild(badge);
@@ -456,10 +503,7 @@ async function navigateActiveTab(url) {
     throw new Error("A valid URL is required.");
   }
 
-  const [tab] = await chrome.tabs.query({
-    active: true,
-    currentWindow: true,
-  });
+  const tab = await getActiveTab();
 
   if (!tab?.id) {
     throw new Error("No active tab found.");
@@ -475,7 +519,7 @@ async function navigateActiveTab(url) {
       return { ok: true, url: normalizedUrl, method: "create" };
     } catch (createError) {
       throw new Error(
-        `Navigation failed for ${normalizedUrl}. update error: ${updateError?.message || "unknown"}; create error: ${createError?.message || "unknown"}`
+        `Navigation failed for ${normalizedUrl}. update error: ${updateError?.message || "unknown"}; create error: ${createError?.message || "unknown"}`,
       );
     }
   }
@@ -510,7 +554,7 @@ function normalizeNavigationUrl(rawUrl, baseUrl) {
 
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     throw new Error(
-      `Unsupported redirect protocol: ${parsed.protocol}. Only http/https are allowed.`
+      `Unsupported redirect protocol: ${parsed.protocol}. Only http/https are allowed.`,
     );
   }
 
