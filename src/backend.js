@@ -249,10 +249,6 @@ app.post("/ai-task", async (req, res) => {
           .join("\n")
       : "(no prior conversation)";
 
-    const hasPageReference = pageReferencePatterns.some((pattern) =>
-      pattern.test(normalizedTaskText),
-    );
-
     const buildNavigationPrompt = ({ strictSelectorMode = false } = {}) => `
 You are a web page assistant.
 
