@@ -229,45 +229,6 @@ app.post("/ai-task", async (req, res) => {
     const taskText = String(task || "").trim();
     const normalizedTaskText = taskText.toLowerCase();
 
-    const extractionIntentPatterns = [
-      // English
-      /\bextract\b/i,
-      /\bget\b/i,
-      /\bshow\b/i,
-      /\bfind\b/i,
-      /\breturn\b/i,
-      /\bgive\s+me\b/i,
-
-      // Bulgarian
-      /извлечи/i,
-      /покажи/i,
-      /намери/i,
-      /върни/i,
-      /дай\s+ми/i,
-      /вземи/i,
-    ];
-
-    const htmlTargetPatterns = [
-      // English
-      /\bhtml\b/i,
-      /\bouterhtml\b/i,
-      /\bmarkup\b/i,
-      /\bdom\b/i,
-      /\belement\b/i,
-      /\bselector\b/i,
-      /\bid\b/i,
-      /\bclass\b/i,
-
-      // Bulgarian
-      /html/i,
-      /маркъп/i,
-      /dom/i,
-      /елемент/i,
-      /селектор/i,
-      /идентификатор/i,
-      /клас/i,
-    ];
-
     const hasExtractionIntent = extractionIntentPatterns.some((pattern) =>
       pattern.test(normalizedTaskText),
     );
@@ -275,92 +236,6 @@ app.post("/ai-task", async (req, res) => {
       pattern.test(normalizedTaskText),
     );
     const isHtmlExtractionTask = hasExtractionIntent && hasHtmlTarget;
-
-    if (isHtmlExtractionTask) {
-      const shouldReplyInBulgarian = /[\u0400-\u04FF]/.test(taskText);
-      const extractionLanguage = shouldReplyInBulgarian
-        ? "Bulgarian"
-        : "English";
-
-      const extractionResponse = await openai.responses.create({
-        model: "gpt-4.1-mini",
-        input: [
-          {
-            role: "user",
-            content: `
-You are an HTML extraction assistant.
-
-The user asked: "${taskText}"
-
-Respond in ${extractionLanguage}.
-
-Return ONLY valid JSON in this exact schema:
-{
-  "found": true,
-  "target": "short description of requested element",
-  "html": "outerHTML for the best matching element, or empty string",
-  "reason": "short reason if not found"
-}
-
-Rules:
-- Use the available page elements as the primary source.
-- If multiple candidates exist, return the most specific and relevant one.
-- If HTML is not available, set found=false and html="" and explain in reason.
-- No markdown and no extra text outside JSON.
-
-Current URL: ${pageUrl}
-Current Title: ${pageTitle}
-
-Page elements available:
-${elementsText}
-`,
-          },
-        ],
-      });
-
-      const rawExtractionText = String(
-        extractionResponse.output_text || "",
-      ).trim();
-      let extraction;
-
-      try {
-        extraction = JSON.parse(rawExtractionText);
-      } catch {
-        extraction = {
-          found: false,
-          target: taskText || "requested element",
-          html: "",
-          reason: rawExtractionText || "Could not parse extraction response.",
-        };
-      }
-
-      const found =
-        Boolean(extraction?.found) &&
-        Boolean(String(extraction?.html || "").trim());
-      const target = String(
-        extraction?.target || taskText || "requested element",
-      ).trim();
-      const extractedHtml = String(extraction?.html || "");
-      const reason = String(extraction?.reason || "").trim();
-
-      return res.json({
-        mode: "html_extraction",
-        message: found
-          ? `${shouldReplyInBulgarian ? "Намерих HTML за" : "Found HTML for"}: ${target}`
-          : `${shouldReplyInBulgarian ? "Не успях да намеря точен елемент" : "Could not find an exact matching element"}${reason ? `. ${reason}` : "."}`,
-        extraction: {
-          found,
-          target,
-          html: extractedHtml,
-          reason,
-        },
-        journey: {
-          summary: "HTML extraction",
-          currentUrl: pageUrl,
-          steps: [],
-        },
-      });
-    }
 
     const explanationIntentPatterns = [
       // English
@@ -471,10 +346,31 @@ ${elementsText}
     const extractedSelectorSet = new Set(extractedSelectors);
 
     const buildNavigationPrompt = ({ strictSelectorMode = false } = {}) => `
-You are a web navigation assistant.
+You are a web page assistant.
 
-Return ONLY valid JSON with this exact schema:
+Decide the user's intent:
+
+1. "explain"
+Use this when the user asks what something means, how something works, why something happens, or asks for clarification.
+Return only a plain explanation in JSON.
+
+2. "navigate"
+Use this when the user asks to go somewhere, open something, click something, find a page, submit, select, filter, search, or perform an action on the page.
+Return navigation/action steps with selectors, hrefs, and URLs.
+
+Return ONLY valid JSON.
+
+Schema for explanation:
 {
+  "intent": "explain",
+  "found": true,
+  "confidence": 0,
+  "explanation": "clear explanation only"
+}
+
+Schema for navigation:
+{
+  "intent": "navigate",
   "found": true,
   "confidence": 0,
   "summary": "short overview",
@@ -482,8 +378,8 @@ Return ONLY valid JSON with this exact schema:
   "steps": [
     {
       "title": "short step title",
-      "action": "what to do",
-      "cssSelector": "best selector for the element",
+      "action": "what the user should do",
+      "cssSelector": "best selector for clicking/querying the element",
       "journeySelector": "full CSS journey/path to the element",
       "href": "href value if the element is a link, otherwise empty string",
       "navigateUrl": "absolute URL to navigate to, otherwise empty string",
@@ -494,23 +390,26 @@ Return ONLY valid JSON with this exact schema:
 }
 
 Rules:
-- Return one best matching target.
-- Use the available page elements as the source of truth.
-- Prefer elements with exact/semantic text match.
+- If the user asks a question, explanation, or asks "what/why/how", use intent="explain".
+- If the user asks to navigate, click, open, go to, select, search, filter, submit, fill, or perform an action, use intent="navigate".
+- For explain intent, do not return selectors, hrefs, steps, or navigation fields.
+- For navigate intent, return one best matching target unless multiple steps are required.
+- Use the screenshot and available page elements as the source of truth.
+- Prefer exact text match, aria-label, title, placeholder, href, button text, and semantic meaning.
 - If the element has href, return it in href.
 - If href is relative, keep href as found and put the absolute URL in navigateUrl if possible.
-- cssSelector should be the best selector for clicking/querying the element.
-- journeySelector should describe the full path/journey to reach the element in the DOM.
+- cssSelector must be the best stable selector for clicking/querying.
+- journeySelector must be the full CSS path/journey to reach the element in the DOM.
 - If the target cannot be found, set found=false, confidence below 80, steps=[] and explain in reason.
 - Never invent selectors, hrefs, text, or URLs.
 - Output valid JSON only.
 - No markdown.
-${strictSelectorMode ? "- CRITICAL: every found step must include non-empty cssSelector and journeySelector." : ""}
+${strictSelectorMode ? "- CRITICAL: for navigate intent, every found step must include non-empty cssSelector and journeySelector." : ""}
 
 Current URL: ${pageUrl}
 Current Title: ${pageTitle}
 
-Task:
+User task:
 ${task}
 
 Available page elements:
@@ -622,19 +521,6 @@ ${elementsText}
       return segments.every((segment) => /[#.]/.test(segment));
     };
 
-    const hasStepWithoutRequiredSelector = (normalizedJourney) =>
-      normalizedJourney.steps.some((step) => {
-        if (step.navigateUrl) return false;
-        const existsInExtractedContext =
-          extractedSelectorSet.size === 0 ||
-          extractedSelectorSet.has(step.cssSelector);
-
-        return (
-          !isValidIdClassPathSelector(step.cssSelector) ||
-          !existsInExtractedContext
-        );
-      });
-
     const buildInputContent = (promptText) => {
       const content = [
         {
@@ -665,21 +551,6 @@ ${elementsText}
 
     let rawText = String(response.output_text || "");
     let journey = normalizeJourney(parseJourneyFromText(rawText));
-
-    if (hasStepWithoutRequiredSelector(journey)) {
-      const strictResponse = await openai.responses.create({
-        model: "gpt-4.1-mini",
-        input: [
-          {
-            role: "user",
-            content: buildNavigationPrompt({ strictSelectorMode: true }),
-          },
-        ],
-      });
-
-      rawText = String(strictResponse.output_text || rawText);
-      journey = normalizeJourney(parseJourneyFromText(rawText));
-    }
 
     res.json({
       message: rawText,
